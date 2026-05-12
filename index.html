@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>請求書入力ツール</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Skyberry import pre-check</p>
+          <h1>請求書入力ツール</h1>
+        </div>
+        <div class="status-pill dev-only" id="libraryStatus">PDF.js 読み込み確認中</div>
+      </header>
+
+      <section class="workspace" id="uploadPage" aria-label="取込ワークスペース">
+        <aside class="upload-panel">
+          <div class="upload-title">
+            <h2>請求書・領収書アップロード</h2>
+            <p>ユーザーがPDFや画像をここから投入します。</p>
+          </div>
+          <input
+            id="fileInput"
+            class="visually-hidden"
+            type="file"
+            multiple
+            accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,image/jpeg,image/png,image/heic,image/heif,application/pdf"
+          />
+          <input
+            id="folderInput"
+            class="visually-hidden"
+            type="file"
+            multiple
+            webkitdirectory
+            accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,image/jpeg,image/png,image/heic,image/heif,application/pdf"
+          />
+          <div class="drop-zone" id="dropZone" role="button" tabindex="0">
+            <div class="drop-zone-body">
+              <span class="drop-icon" aria-hidden="true">+</span>
+              <strong>請求書・領収書を選択</strong>
+              <span>複数ファイル / フォルダ / ドラッグ&ドロップ</span>
+              <span>PDF / JPG / PNG / HEIC</span>
+            </div>
+          </div>
+
+          <div class="clear-row">
+            <button type="button" id="clearButton">すべて削除</button>
+          </div>
+
+          <div class="selected-file-panel" aria-label="選択したファイル">
+            <div class="selected-file-head">
+              <div>
+                <strong>選択したファイル</strong>
+                <small id="selectedFileSummary">未選択</small>
+              </div>
+              <span id="selectedFileCount">0件</span>
+            </div>
+            <ul class="selected-file-list" id="selectedFileList">
+              <li class="selected-file-empty">まだ選択されていません。</li>
+            </ul>
+          </div>
+
+          <div class="progress-panel is-hidden" id="progressPanel" aria-live="polite">
+            <div class="progress-head">
+              <strong id="progressTitle">処理中</strong>
+              <span id="progressCount">0 / 0</span>
+            </div>
+            <div class="progress-track" aria-hidden="true">
+              <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-current" id="progressCurrent">待機中</div>
+          </div>
+
+          <div class="extraction-action-panel">
+            <button type="button" class="primary-button" id="runAiButton">次へ</button>
+            <div class="ai-status" id="aiStatus">書類をアップロードしてから次へ進んでください。</div>
+          </div>
+
+          <dl class="summary-grid dev-only" aria-label="処理サマリー">
+            <div>
+              <dt>投入</dt>
+              <dd id="totalCount">0</dd>
+            </div>
+            <div class="dev-only">
+              <dt>画像</dt>
+              <dd id="imageCount">0</dd>
+            </div>
+            <div class="dev-only">
+              <dt>PDF</dt>
+              <dd id="pdfCount">0</dd>
+            </div>
+            <div class="dev-only">
+              <dt>要OCR</dt>
+              <dd id="ocrCount">0</dd>
+            </div>
+          </dl>
+
+          <div class="settings-panel dev-only">
+            <label for="maxEdge">画像最大辺</label>
+            <div class="range-row">
+              <input id="maxEdge" type="range" min="900" max="2400" step="100" value="2200" />
+              <output id="maxEdgeValue" for="maxEdge">2200px</output>
+            </div>
+            <label for="jpegQuality">JPEG品質</label>
+            <div class="range-row">
+              <input id="jpegQuality" type="range" min="0.45" max="0.92" step="0.01" value="0.9" />
+              <output id="jpegQualityValue" for="jpegQuality">0.90</output>
+            </div>
+          </div>
+        </aside>
+
+        <section class="result-panel dev-only">
+          <div class="result-header">
+            <h2>解析結果</h2>
+            <div class="legend">
+              <span><i class="dot image"></i>画像ルート</span>
+              <span><i class="dot pdf"></i>PDF解析</span>
+              <span><i class="dot ocr"></i>OCR候補</span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ファイル</th>
+                  <th>判定</th>
+                  <th>テキスト量</th>
+                  <th>処理</th>
+                  <th>プレビュー</th>
+                </tr>
+              </thead>
+              <tbody id="resultRows">
+                <tr class="empty-row">
+                  <td colspan="5">ファイルを選択するとここに判定結果が表示されます。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="ai-panel dev-only" aria-label="AI抽出">
+        <div class="ai-controls">
+          <label class="dev-only">
+            モデル
+            <input id="modelInput" type="text" value="gemini-2.5-flash" />
+          </label>
+          <label class="expected-field dev-only">
+            期待値JSON（任意）
+            <textarea id="expectedJsonInput" spellcheck="false" placeholder='{"sample.jpg":{"date":"2026-05-01","vendor":"ABC商店","total_amount":12345}}'></textarea>
+          </label>
+          <div class="template-status" id="excelTemplateStatus">既定テンプレートを読込中です。</div>
+        </div>
+
+        <div class="table-wrap dev-only">
+          <table class="ai-table">
+            <thead>
+              <tr>
+                <th>ファイル</th>
+                <th>抽出結果</th>
+                <th>期待値比較</th>
+                <th>JSON</th>
+              </tr>
+            </thead>
+            <tbody id="aiResultRows">
+              <tr class="empty-row">
+                <td colspan="4">AI抽出結果がここに表示されます。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="review-panel is-hidden" id="reviewPage" aria-label="目視確認画面">
+        <div class="review-header">
+          <div>
+            <p class="eyebrow">Review workspace</p>
+            <h2>目視確認</h2>
+          </div>
+          <div class="review-actions">
+            <button type="button" id="backToUploadButton">戻る</button>
+            <button type="button" class="dev-only" id="copyReviewJsonButton">JSONコピー</button>
+            <button type="button" id="exportSkyberryButton">skyberry Excel出力</button>
+            <button type="button" class="primary-button" id="saveReviewButton">編集内容を反映</button>
+          </div>
+        </div>
+
+        <div class="review-list" id="reviewList" aria-label="確認対象ファイル一覧">
+          <span class="review-list-empty">書類をアップロードすると、ここに確認対象が並びます。</span>
+        </div>
+
+        <div class="review-body">
+          <section class="document-viewer" aria-label="請求書画像">
+            <div class="viewer-toolbar">
+              <strong id="reviewFileName">書類未選択</strong>
+              <span id="reviewRouteLabel">書類をアップロードして次へ進んでください。</span>
+            </div>
+            <div class="viewer-canvas">
+              <img id="reviewImage" alt="選択した請求書・領収書" />
+              <div class="viewer-empty" id="reviewImageEmpty">左側に請求書・領収書の画像が表示されます。</div>
+            </div>
+          </section>
+
+          <section class="review-form-panel" aria-label="抽出データ編集フォーム">
+            <div class="review-form-head">
+              <h3>抽出データ</h3>
+              <span id="reviewEditStatus">未選択</span>
+            </div>
+            <form id="reviewForm" class="review-form"></form>
+          </section>
+        </div>
+
+        <div class="review-footer-actions">
+          <button type="button" id="backToUploadBottomButton">戻る</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <script src="./app.js" charset="utf-8"></script>
+  </body>
+</html>
