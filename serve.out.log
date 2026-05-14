@@ -2,3 +2,4 @@ Invoice Input PoC server
 Root: C:\Users\8964713\Desktop\invoice-input
 URL : http://127.0.0.1:5173/
 Press Ctrl+C to stop.
+[pdfjs.asset.error] https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/UniJIS-UTF16-H.bcmap PDF.js asset fetch failed: "1" 個の引数を指定して "DownloadData" を呼び出し中に例外が発生しました: "リモート サーバーに接続できません。"

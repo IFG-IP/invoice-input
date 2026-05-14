@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>請求書入力ツール</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -199,7 +200,8 @@
               <span id="reviewRouteLabel">書類をアップロードして次へ進んでください。</span>
             </div>
             <div class="viewer-canvas">
-              <img id="reviewImage" alt="選択した請求書・領収書" />
+              <div class="viewer-pages" id="reviewPages" aria-label="読み込んだページ"></div>
+              <img id="reviewImage" class="viewer-fallback-image" alt="選択した請求書・領収書" />
               <div class="viewer-empty" id="reviewImageEmpty">左側に請求書・領収書の画像が表示されます。</div>
             </div>
           </section>
@@ -222,6 +224,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <script src="./config.js"></script>
     <script src="./app.js" charset="utf-8"></script>
   </body>
 </html>

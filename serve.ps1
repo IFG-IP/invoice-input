@@ -204,6 +204,39 @@ function Normalize-GeminiModelName {
   return $model
 }
 
+function Get-QueryParameter {
+  param(
+    [string]$RawPath,
+    [string]$Name
+  )
+
+  $queryStart = $RawPath.IndexOf("?")
+  if ($queryStart -lt 0) {
+    return $null
+  }
+
+  $query = $RawPath.Substring($queryStart + 1)
+  foreach ($pair in ($query -split "&")) {
+    if ([string]::IsNullOrWhiteSpace($pair)) {
+      continue
+    }
+
+    $parts = $pair -split "=", 2
+    $key = [System.Uri]::UnescapeDataString($parts[0].Replace("+", " "))
+    if ($key -ne $Name) {
+      continue
+    }
+
+    if ($parts.Length -lt 2) {
+      return ""
+    }
+
+    return [System.Uri]::UnescapeDataString($parts[1].Replace("+", " "))
+  }
+
+  return $null
+}
+
 function Get-GcloudCommandPath {
   $gcloud = Get-Command "gcloud" -ErrorAction SilentlyContinue
   if ($gcloud) {
@@ -330,17 +363,30 @@ function Send-GeminiError {
 function Invoke-GeminiGenerateContent {
   param(
     [System.Net.Sockets.NetworkStream]$Stream,
-    [string]$RequestBody
+    [string]$RequestBody,
+    [string]$ModelFromQuery
   )
 
   try {
-    $requestJson = $RequestBody | ConvertFrom-Json
-    $model = Normalize-GeminiModelName $requestJson.model
+    if ([string]::IsNullOrWhiteSpace($ModelFromQuery)) {
+      $requestJson = $RequestBody | ConvertFrom-Json
+      $model = Normalize-GeminiModelName $requestJson.model
 
-    $geminiBody = [ordered]@{
-      contents = $requestJson.contents
-      generationConfig = $requestJson.generationConfig
-    } | ConvertTo-Json -Depth 100 -Compress
+      $geminiBody = [ordered]@{
+        contents = $requestJson.contents
+        generationConfig = $requestJson.generationConfig
+      } | ConvertTo-Json -Depth 100 -Compress
+    }
+    else {
+      $model = Normalize-GeminiModelName $ModelFromQuery
+      $geminiBody = $RequestBody
+    }
+
+    if ([string]::IsNullOrWhiteSpace($geminiBody)) {
+      throw "Gemini request body is empty."
+    }
+
+    $geminiBodyBytes = [System.Text.Encoding]::UTF8.GetBytes($geminiBody)
 
     $provider = Get-GeminiProvider
     $modelPath = [System.Uri]::EscapeDataString($model)
@@ -381,8 +427,8 @@ function Invoke-GeminiGenerateContent {
       -Uri $uri `
       -Method Post `
       -Headers $headers `
-      -ContentType "application/json" `
-      -Body $geminiBody `
+      -ContentType "application/json; charset=utf-8" `
+      -Body $geminiBodyBytes `
       -UseBasicParsing `
       -TimeoutSec 90
 
@@ -530,7 +576,8 @@ try {
       }
 
       if ($method -eq "POST" -and $pathOnly -eq "/api/gemini/generate") {
-        Invoke-GeminiGenerateContent $stream $request.Body
+        $modelFromQuery = Get-QueryParameter $rawPath "model"
+        Invoke-GeminiGenerateContent $stream $request.Body $modelFromQuery
         continue
       }
 
