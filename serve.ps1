@@ -332,12 +332,11 @@ function Get-VertexAuthHeaders {
     return @{ "Authorization" = "Bearer $accessToken" }
   }
 
-  $apiKey = Get-DotEnvValue "VERTEX_API_KEY"
-  if (-not [string]::IsNullOrWhiteSpace($apiKey)) {
-    return @{ "x-goog-api-key" = $apiKey }
+  if (-not [string]::IsNullOrWhiteSpace((Get-DotEnvValue "VERTEX_API_KEY"))) {
+    throw "Vertex AI generateContent does not support VERTEX_API_KEY. Use GEMINI_PROVIDER=generative with GEMINI_API_KEY, or use Vertex AI with VERTEX_ACCESS_TOKEN / gcloud OAuth."
   }
 
-  throw "Vertex AI credentials were not found. Set VERTEX_ACCESS_TOKEN or VERTEX_API_KEY in .env, or run gcloud auth application-default login."
+  throw "Vertex AI credentials were not found. Set VERTEX_ACCESS_TOKEN in .env, or run gcloud auth application-default login."
 }
 
 function Send-GeminiError {

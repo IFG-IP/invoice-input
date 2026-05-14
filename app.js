@@ -2063,11 +2063,11 @@
     try {
       response = await fetch(apiUrl("/api/health"), { cache: "no-store" });
     } catch (error) {
-      throw new Error("ローカルAPIプロキシに接続できません。open-local.cmdで起動し直してください。");
+      throw new Error("APIに接続できません。Amplifyではconfig.jsのapiBaseUrl、ローカルではopen-local.cmdの起動を確認してください。");
     }
 
     if (!response.ok) {
-      throw new Error("Gemini APIプロキシが見つかりません。open-local.cmdでサーバーを起動し直してください。");
+      throw new Error("Gemini APIプロキシが見つかりません。AmplifyではAPI GatewayのURL設定とルート、ローカルではopen-local.cmdの起動を確認してください。");
     }
   }
 
