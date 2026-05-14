@@ -2113,7 +2113,7 @@
         throw new Error(`既定テンプレートを取得できませんでした (${response.status})`);
       }
 
-      const data = await response.arrayBuffer();
+      const workbook = await readTemplateWorkbook(response);
       const templateSource = response.headers.get("X-Template-Source");
       const templateName = response.headers.get("X-Template-Name");
       const source = templateSource === "local-workbook"
@@ -2121,7 +2121,7 @@
         : templateSource === "sharepoint"
           ? "SharePointテンプレート"
           : "ローカル既定テンプレート";
-      applyTemplateWorkbook(data, source);
+      applyTemplateWorkbook(workbook, source);
     } catch (error) {
       setTemplateStatus(error.message || "既定テンプレートの読込に失敗しました。", "error");
       sendClientLog("template.failed", {
@@ -2130,8 +2130,25 @@
     }
   }
 
-  function applyTemplateWorkbook(data, label) {
-    const workbook = XLSX.read(data);
+  async function readTemplateWorkbook(response, options) {
+    const contentType = String(response.headers.get("Content-Type") || "").toLowerCase();
+    if (contentType.includes("text/csv")) {
+      const text = await response.text();
+      return XLSX.read(stripUtf8Bom(text), {
+        type: "string",
+        cellDates: Boolean(options && options.cellDates),
+      });
+    }
+
+    const data = await response.arrayBuffer();
+    return XLSX.read(data, options || {});
+  }
+
+  function stripUtf8Bom(value) {
+    return String(value || "").replace(/^\uFEFF/, "");
+  }
+
+  function applyTemplateWorkbook(workbook, label) {
     const firstSheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[firstSheetName];
     const rows = XLSX.utils.sheet_to_json(sheet, {
@@ -3163,8 +3180,7 @@
         throw new Error(`テンプレートExcelを取得できませんでした (${response.status})`);
       }
 
-      const data = await response.arrayBuffer();
-      const workbook = XLSX.read(data, { cellDates: true });
+      const workbook = await readTemplateWorkbook(response, { cellDates: true });
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
       const headerRow = readSheetHeader(sheet);
