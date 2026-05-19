@@ -13,7 +13,30 @@ if ([string]::IsNullOrWhiteSpace($env:CLOUDSDK_CONFIG)) {
 }
 
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
-$listener.Start()
+try {
+  $listener.Start()
+}
+catch {
+  $listener.Stop()
+  $message = $_.Exception.Message
+  Write-Host "Port $Port is already in use or unavailable."
+  Write-Host "URL : http://127.0.0.1:$Port/"
+
+  try {
+    $health = (Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/health" -UseBasicParsing -TimeoutSec 2).Content
+    if ($health -match '"ok"\s*:\s*true') {
+      Write-Host "Invoice Input PoC server already appears to be running."
+      Write-Host "Open the URL above, or stop the existing PowerShell process before starting a new one."
+      exit 0
+    }
+  }
+  catch {
+  }
+
+  Write-Host "Start with another port, for example: powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1 -Port 5174"
+  Write-Host "Original error: $message"
+  exit 1
+}
 
 Write-Host "Invoice Input PoC server"
 Write-Host "Root: $root"

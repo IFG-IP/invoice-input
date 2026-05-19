@@ -214,6 +214,50 @@ h2 {
   display: none !important;
 }
 
+.required-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.required-modal-card {
+  display: grid;
+  width: min(420px, 100%);
+  gap: 16px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 20px;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.28);
+}
+
+.required-modal-card h3 {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 18px;
+}
+
+.required-modal-card p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.required-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.required-modal-actions button {
+  min-width: 136px;
+}
+
 .drop-zone-body {
   display: grid;
   justify-items: center;
@@ -646,6 +690,21 @@ h2 {
   background: #eef8f6;
 }
 
+.review-list-item.is-required-missing {
+  border-color: #fca5a5;
+  background: #fff5f5;
+}
+
+.review-list-item.is-required-missing small {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.review-list-item.is-active.is-required-missing {
+  border-color: #dc2626;
+  background: #fff1f2;
+}
+
 .review-body {
   display: grid;
   grid-template-columns: minmax(360px, 1.05fr) minmax(360px, 0.95fr);
@@ -767,6 +826,18 @@ h2 {
 .review-form-head span {
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.review-form-head span.error {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.review-form-head span.ready {
+  color: var(--accent-strong);
+  font-weight: 700;
 }
 
 .review-form {
@@ -796,6 +867,39 @@ h2 {
 
 .review-field textarea {
   min-height: 68px;
+}
+
+.review-field.is-required-missing label {
+  color: #b91c1c;
+}
+
+.review-field.is-required-missing input,
+.review-field.is-required-missing textarea {
+  border-color: #dc2626;
+  background: #fff7f7;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12);
+}
+
+.review-field-required-message {
+  display: none;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.review-field-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.review-field-help.payment-reminder {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.review-field.is-required-missing .review-field-required-message {
+  display: block;
 }
 
 .review-field-meta {

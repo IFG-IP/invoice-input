@@ -129,9 +129,11 @@
     showUploadPage();
   });
 
-  els.saveReviewButton.addEventListener("click", function () {
-    saveReviewEdits();
-  });
+  if (els.saveReviewButton) {
+    els.saveReviewButton.addEventListener("click", function () {
+      saveReviewEdits();
+    });
+  }
 
   els.copyReviewJsonButton.addEventListener("click", function () {
     copyReviewJson();
@@ -139,6 +141,18 @@
 
   els.exportSkyberryButton.addEventListener("click", function () {
     exportSkyberryExcel();
+  });
+
+  els.reviewForm.addEventListener("input", function () {
+    saveReviewEdits({ silent: true });
+  });
+
+  els.reviewForm.addEventListener("click", function (event) {
+    openDatePickerIfAvailable(event.target);
+  });
+
+  els.reviewForm.addEventListener("focusin", function (event) {
+    openDatePickerIfAvailable(event.target);
   });
 
   loadDefaultExcelTemplate();
@@ -1046,6 +1060,9 @@
       if (keyMatches(key, "payment_method")) {
         extraction[key] = normalizePaymentMethod(extraction[key], extraction, item);
       }
+      if (keyMatches(key, "usage_month")) {
+        extraction[key] = normalizeUsageMonth(extraction[key]);
+      }
       if (keyMatches(key, "bank_account_type")) {
         extraction[key] = normalizeBankAccountType(extraction[key]);
       }
@@ -1215,6 +1232,12 @@
     }
     if (/^4$|電子契約書/.test(compact)) {
       return "4";
+    }
+    if (/^1$|紙|原本/.test(compact)) {
+      return "1";
+    }
+    if (/^2$|データ|データー|電子|PDF|メール|メール添付/.test(compact)) {
+      return "2";
     }
 
     return defaultReceiptMethod(item);
@@ -1493,6 +1516,42 @@
       return null;
     }
     return `${y}-${m}-${d}`;
+  }
+
+  function normalizeUsageMonth(value) {
+    if (isBlank(value)) {
+      return null;
+    }
+
+    const source = toHalfWidthAscii(value).replace(/\s+/g, " ").trim();
+    const eraMatch = source.match(/(令和|平成|昭和|R|H|S)\s*(元|\d{1,2})\s*年?\s*[\/.-]?\s*(\d{1,2})(?:\s*月(?:\s*\d{1,2}\s*日?)?|\s*[\/.-]\s*\d{1,2}\s*日?)?/i);
+    if (eraMatch) {
+      const era = eraMatch[1].toUpperCase();
+      const eraYear = eraMatch[2] === "元" ? 1 : Number(eraMatch[2]);
+      const baseYear = era === "令和" || era === "R" ? 2018 : era === "平成" || era === "H" ? 1988 : 1925;
+      return formatMonthParts(baseYear + eraYear, eraMatch[3]);
+    }
+
+    const westernMatch = source.match(/(\d{4})\s*(?:年|[\/.-])\s*(\d{1,2})(?:\s*月(?:\s*\d{1,2}\s*日?)?|\s*[\/.-]\s*\d{1,2}\s*日?)?/);
+    if (westernMatch) {
+      return formatMonthParts(westernMatch[1], westernMatch[2]);
+    }
+
+    const compactMatch = source.match(/\b(\d{4})(0[1-9]|1[0-2])\b/);
+    if (compactMatch) {
+      return formatMonthParts(compactMatch[1], compactMatch[2]);
+    }
+
+    return source.replace(/\s+/g, "");
+  }
+
+  function formatMonthParts(year, month) {
+    const y = String(year).padStart(4, "0");
+    const m = Number(month);
+    if (!Number.isFinite(m) || m < 1 || m > 12) {
+      return null;
+    }
+    return `${y}-${m}`;
   }
 
   function extractExplicitBankAccountType(text) {
@@ -2232,7 +2291,7 @@
       [/^(口座種別|口座種類|預金種目|預金種別|預金科目|普通|当座|貯蓄)/, "bank_account_type"],
       [/^(口座番号|口座No|AccountNumber|AccountNo|ACNo|IBAN)/i, "bank_account_number"],
       [/^(口座名義(?:フリガナ|フリ仮名|カナ|ﾌﾘｶﾞﾅ|ﾌﾘ仮名|ｶﾅ)?|名義(?:フリガナ|フリ仮名|カナ|ﾌﾘｶﾞﾅ|ﾌﾘ仮名|ｶﾅ)|受取人名(?:義)?(?:フリガナ|カナ|ﾌﾘｶﾞﾅ|ｶﾅ)|振込先名義(?:フリガナ|カナ|ﾌﾘｶﾞﾅ|ｶﾅ)?)/, "bank_account_kana"],
-      [/^請求書発行日$/, "invoice_issue_date"],
+      [/^請求(?:書|者)発行日$/, "invoice_issue_date"],
       [/^伝票種類$/, "voucher_type"],
       [/^伝票日付$/, "voucher_date"],
       [/^仕入先CD社員CD$/i, "supplier_employee_code"],
@@ -2386,7 +2445,9 @@
       }
     }
 
-    if (isDateField(key, label)) {
+    if (keyMatches(key, "usage_month")) {
+      rules.push("利用月は日付ではなく月単位の項目。YYYY-M形式で返し、日付が書かれていても日部分は付けない。例: 2026年4月30日、2026-04-30、2026年4月分はいずれも2026-4。");
+    } else if (isDateField(key, label)) {
       rules.push("日付は可能ならYYYY-MM-DD形式。請求書発行日、支払日、伝票日付、契約期間を混同しない。");
     }
 
@@ -2591,6 +2652,9 @@
     if (keyMatches(key, "payment_due_date")) {
       return "支払日・支払期日・振込期限。請求書発行日とは区別する。";
     }
+    if (keyMatches(key, "usage_month")) {
+      return "利用月。日付ではなく月単位の値。日部分は付けずYYYY-M形式で出力する。";
+    }
     if (keyMatches(key, "invoice_issue_date") || keyMatches(key, "date")) {
       return "請求書・領収書の発行日、請求日、領収日、取引日。支払期日とは区別する。";
     }
@@ -2646,6 +2710,9 @@
     }
     if (keyMatches(key, "payment_due_date")) {
       add(["支払日", "支払期日", "支払期限", "振込期限", "入金期日", "お支払期限", "お支払い期限", "引落日", "引落予定日", "振替日", "口座振替日", "口座振替予定日", "Due Date", "Payment Due", "Payment Due Date", "Payment Deadline"]);
+    }
+    if (keyMatches(key, "usage_month")) {
+      add(["利用月", "ご利用月", "対象月", "請求月", "利用年月", "対象年月", "ご利用年月", "ご請求月", "ご請求年月", "利用分", "ご利用分", "請求分", "年月", "Usage Month", "Service Month", "Billing Month"]);
     }
     if (keyMatches(key, "invoice_issue_date") || keyMatches(key, "date")) {
       add(["発行日", "請求日", "領収日", "取引日", "利用日", "日付", "年月日", "発行年月日", "Invoice Date", "Issue Date", "Date", "Billing Date", "Receipt Date", "Transaction Date"]);
@@ -2719,10 +2786,11 @@
       ["bank_account_type", "bank_account_number", "bank_account_kana"].some(hasField) ? "口座情報のアンカー語: 普通、当座、貯蓄、口座種別、預金種目、口座番号、口座名義、口座名義フリガナ、口座名義カナ、受取人名カナ、振込先名義カナ、ﾌﾘｶﾞﾅ、ｶﾅ。これらの前後左右にある値を抽出対象に含めてください。" : "",
       hasField("vendor") ? "支払先名の判定手順: 1) 会社名候補を全て見る。2) 御中・様・殿が付く候補、請求者名、請求者、宛先、請求先、支払者側の候補を除外する。3) 残った候補から振込先・受取人名・口座名義・支払先を優先し、振込先がなければ御中などが付いていない請求元・発行者・発行元・領収者を選ぶ。4) 御中付き候補の敬称だけを削って返すことは禁止。迷う場合はnull。" : "",
       hasField("bank_account_kana") ? "口座名義フリガナは表記どおり保持してください。例: 'ｶ) ﾙ-ﾄｴ-' は 'ｶ)' を省略せず、そのまま返してください。'カ)ルートエー' を 'カ)ルートA' や 'カ)ルートI-' にしないでください。" : "",
+      hasField("usage_month") ? "利用月は日付ではなく月単位の項目です。出力はYYYY-M形式にし、2026-4-30や2026-04-30のように日部分を付けないでください。例: 2026年4月30日、2026年4月分、2026-04-30はいずれも2026-4。" : "",
       hasField("payment_description") || hasField("summary") ? "支払内容・摘要は、書類に印字された支払内容、摘要、件名、但し書き、請求内容、ご利用内容、品名、内容を原文優先で抽出してください。これらの記入欄に値がある場合は必ず抽出してください。AIが内容を要約した分類名を作ることは禁止です。ご請求分・ご請求内訳・ご利用明細・請求明細の表に複数行がある場合、その中の1行だけを代表として返さないでください。ただし支払内容・摘要・件名などの明記欄に書かれた値は採用してください。" : "",
       "金額の重要ルール: 税抜、小計、消費税、税込合計、支払総額を混同しないでください。計算で補完せず、書類に明記された金額だけを返してください。",
       "金額候補が複数ある場合は、書類上のラベルとExcel列の意味が一致するものだけを採用してください。",
-      "日付は判別できる場合 YYYY-MM-DD に正規化してください。",
+      "日付項目は判別できる場合 YYYY-MM-DD に正規化してください。利用月は例外でYYYY-Mにし、日部分を付けないでください。",
       "金額は数値だけにし、円記号やカンマは含めないでください。",
       `抽出項目: ${activeExtractionFields.map(function (field) {
         return `${fieldKey(field)}=${fieldLabel(field)}`;
@@ -2845,6 +2913,10 @@
       return normalizeDate(value);
     }
 
+    if (keyMatches(field, "usage_month")) {
+      return normalizeUsageMonth(value) || "";
+    }
+
     if (field === "currency") {
       return String(value).trim().toUpperCase();
     }
@@ -2863,6 +2935,15 @@
     const month = match[2].padStart(2, "0");
     const day = match[3].padStart(2, "0");
     return `${year}-${month}-${day}`;
+  }
+
+  function dateInputValue(value) {
+    if (isBlank(value)) {
+      return "";
+    }
+
+    const normalized = normalizeFlexibleDateCandidate(value) || normalizeDate(value);
+    return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : "";
   }
 
   function appendAiPendingRow(item) {
@@ -2936,6 +3017,10 @@
   }
 
   function selectReviewItem(itemId) {
+    if (state.currentReviewId !== null && state.currentReviewId !== itemId && els.reviewForm.children.length > 0) {
+      saveReviewEdits({ silent: true });
+    }
+
     const item = state.items.find(function (candidate) {
       return candidate.id === itemId;
     });
@@ -2970,9 +3055,14 @@
 
     els.reviewList.innerHTML = reviewableItems.map(function (item) {
       const isSelected = item.id === state.currentReviewId;
-      const status = state.extractions.has(item.id) ? "抽出済み" : "未抽出";
+      const extraction = state.extractions.get(item.id);
+      const requiredValidation = extraction ? validateSkyberryRequiredExtraction(extraction) : null;
+      const hasMissingRequired = Boolean(requiredValidation && requiredValidation.missingGroups.length > 0);
+      const status = hasMissingRequired
+        ? `必須 ${requiredValidation.missingGroups.length}件未入力`
+        : state.extractions.has(item.id) ? "抽出済み" : "未抽出";
       return `
-        <button type="button" class="review-list-item ${isSelected ? "is-active" : ""}" data-review-id="${item.id}">
+        <button type="button" class="review-list-item ${isSelected ? "is-active" : ""} ${hasMissingRequired ? "is-required-missing" : ""}" data-review-id="${item.id}">
           <span>${escapeHtml(displayName(item.file))}</span>
           <small>${escapeHtml(status)}</small>
         </button>
@@ -2996,24 +3086,31 @@
     if (els.reviewPages) {
       els.reviewPages.innerHTML = viewerContent;
     }
-    els.reviewEditStatus.textContent = state.extractions.has(item.id) ? "編集できます" : "AI抽出前";
+    setReviewEditStatus(state.extractions.has(item.id) ? "編集できます" : "AI抽出前");
 
     els.reviewForm.innerHTML = activeExtractionFields.map(function (field) {
       const key = fieldKey(field);
       const label = fieldLabel(field);
       const value = extraction[key] === null || extraction[key] === undefined ? "" : String(extraction[key]);
       const isLong = /内容|摘要|備考|明細|detail|description|notes|summary/.test(key + label);
+      const isPaymentDate = keyMatches(key, "payment_due_date");
+      const inputType = isAmountField(key, label) ? "number" : isPaymentDate ? "date" : "text";
+      const inputValue = isPaymentDate ? dateInputValue(value) : value;
+      const datePickerAttr = isPaymentDate ? ' data-date-picker="true"' : "";
       const input = isLong
-        ? `<textarea data-field-key="${escapeHtml(key)}">${escapeHtml(value)}</textarea>`
-        : `<input data-field-key="${escapeHtml(key)}" type="${isAmountField(key, label) ? "number" : "text"}" value="${escapeHtml(value)}" />`;
+        ? `<textarea id="review-${escapeHtml(key)}" data-field-key="${escapeHtml(key)}">${escapeHtml(value)}</textarea>`
+        : `<input id="review-${escapeHtml(key)}" data-field-key="${escapeHtml(key)}" type="${inputType}" value="${escapeHtml(inputValue)}"${datePickerAttr} />`;
       return `
         <div class="review-field">
           <label for="review-${escapeHtml(key)}">${escapeHtml(label)}</label>
           ${input}
+          ${isPaymentDate ? '<span class="review-field-help payment-reminder">入金を忘れないよう、支払日を必ず確認してください。</span>' : ""}
+          <span class="review-field-required-message">必須項目です</span>
           <span class="review-field-meta">${escapeHtml(key)}</span>
         </div>
       `;
     }).join("");
+    highlightCurrentReviewRequiredFields();
   }
 
   function pagePreviewUrlsForItem(item) {
@@ -3050,17 +3147,20 @@
     }).join("");
   }
 
-  function saveReviewEdits() {
+  function saveReviewEdits(options) {
+    const settings = options || {};
     if (state.currentReviewId === null) {
-      els.reviewEditStatus.textContent = "書類を選択してください";
-      return;
+      if (!settings.silent) {
+        setReviewEditStatus("書類を選択してください", "error");
+      }
+      return false;
     }
 
     const item = state.items.find(function (candidate) {
       return candidate.id === state.currentReviewId;
     });
     if (!item) {
-      return;
+      return false;
     }
 
     const updated = {};
@@ -3091,6 +3191,9 @@
       if (keyMatches(key, "payment_method")) {
         updated[key] = normalizePaymentMethod(updated[key], updated, item);
       }
+      if (keyMatches(key, "usage_month")) {
+        updated[key] = normalizeUsageMonth(updated[key]);
+      }
       if (keyMatches(key, "bank_account_type")) {
         updated[key] = normalizeBankAccountType(updated[key]);
       }
@@ -3106,9 +3209,17 @@
     fillSummaryFields(updated);
 
     state.extractions.set(state.currentReviewId, updated);
-    els.reviewEditStatus.textContent = "反映しました";
+    const requiredValidation = highlightCurrentReviewRequiredFields();
+    if (!settings.silent) {
+      if (requiredValidation && requiredValidation.missingGroups.length > 0) {
+        setReviewEditStatus("反映しました。未入力の必須項目があります。", "error");
+      } else {
+        setReviewEditStatus("反映しました", "ready");
+      }
+    }
     renderReviewList();
     refreshAiRowForItem(item, updated);
+    return true;
   }
 
   function refreshAiRowForItem(item, extraction) {
@@ -3134,22 +3245,22 @@
 
   async function copyReviewJson() {
     if (state.currentReviewId === null || !state.extractions.has(state.currentReviewId)) {
-      els.reviewEditStatus.textContent = "コピーする抽出データがありません";
+      setReviewEditStatus("コピーする抽出データがありません", "error");
       return;
     }
 
     const json = JSON.stringify(state.extractions.get(state.currentReviewId), null, 2);
     try {
       await navigator.clipboard.writeText(json);
-      els.reviewEditStatus.textContent = "JSONをコピーしました";
+      setReviewEditStatus("JSONをコピーしました", "ready");
     } catch (error) {
-      els.reviewEditStatus.textContent = "コピーに失敗しました";
+      setReviewEditStatus("コピーに失敗しました", "error");
     }
   }
 
   async function exportSkyberryExcel() {
     if (!window.XLSX) {
-      els.reviewEditStatus.textContent = "Excel出力ライブラリを読み込めません";
+      setReviewEditStatus("Excel出力ライブラリを読み込めません", "error");
       return;
     }
 
@@ -3167,12 +3278,21 @@
       });
 
     if (rows.length === 0) {
-      els.reviewEditStatus.textContent = "出力する抽出データがありません";
+      setReviewEditStatus("出力する抽出データがありません", "error");
       return;
     }
 
+    const requiredValidation = validateSkyberryRequiredRows(rows);
+    if (!requiredValidation.ok) {
+      showSkyberryRequiredError(requiredValidation);
+      const shouldContinue = await confirmSkyberryRequiredOverride(requiredValidation);
+      if (!shouldContinue) {
+        return;
+      }
+    }
+
     els.exportSkyberryButton.disabled = true;
-    els.reviewEditStatus.textContent = "Excel出力中...";
+    setReviewEditStatus("Excel出力中...");
 
     try {
       const response = await fetch(DEFAULT_TEMPLATE_URL, { cache: "no-store" });
@@ -3212,14 +3332,14 @@
 
       const outputName = `skyberry-import-${formatDateForFileName(new Date())}.xlsx`;
       XLSX.writeFile(workbook, outputName);
-      els.reviewEditStatus.textContent = `${rows.length}件をExcel出力しました`;
+      setReviewEditStatus(`${rows.length}件をExcel出力しました`, "ready");
       sendClientLog("skyberry.excel.exported", {
         fileName: outputName,
         rows: rows.length,
         sheetName,
       });
     } catch (error) {
-      els.reviewEditStatus.textContent = error.message || "Excel出力に失敗しました";
+      setReviewEditStatus(error.message || "Excel出力に失敗しました", "error");
       sendClientLog("skyberry.excel.failed", {
         error: error.message || "Excel出力に失敗しました",
       });
@@ -3230,7 +3350,312 @@
 
   function saveReviewEditsIfSelected() {
     if (state.currentReviewId !== null && els.reviewForm.children.length > 0) {
-      saveReviewEdits();
+      saveReviewEdits({ silent: true });
+    }
+  }
+
+  function validateSkyberryRequiredRows(rows) {
+    const invalidRows = rows.map(function (row) {
+      return {
+        item: row.item,
+        validation: validateSkyberryRequiredExtraction(row.extraction),
+      };
+    }).filter(function (row) {
+      return row.validation.missingGroups.length > 0;
+    });
+
+    return {
+      ok: invalidRows.length === 0,
+      invalidRows,
+    };
+  }
+
+  function validateSkyberryRequiredExtraction(extraction) {
+    const source = extraction || {};
+    const missingGroups = skyberryRequiredGroups().filter(function (group) {
+      if (group.fields.length === 0) {
+        return true;
+      }
+      return !group.fields.some(function (field) {
+        return !isRequiredBlank(source[fieldKey(field)]);
+      });
+    });
+
+    return { missingGroups };
+  }
+
+  function isRequiredBlank(value) {
+    if (isBlank(value)) {
+      return true;
+    }
+
+    const text = String(value).replace(/\s+/g, "").toLowerCase();
+    return ["-", "ー", "null", "undefined", "n/a", "na", "なし", "無し", "該当なし"].includes(text);
+  }
+
+  function skyberryRequiredGroups() {
+    return [
+      {
+        label: "受領方法",
+        fields: requiredFields(["receipt_method"], /^受領方法/),
+      },
+      {
+        label: "支払先名",
+        fields: requiredFields(["vendor"], /^支払先名$/),
+      },
+      {
+        label: "￥通貨：支払金額(税抜)または＄通貨：支払金額(税抜)",
+        fields: requiredFields(["subtotal_amount_jpy", "subtotal_amount_usd"], /^(￥通貨支払金額税抜|\$通貨支払金額税抜)$/),
+      },
+      {
+        label: "支払内容",
+        fields: requiredFields(["payment_description"], /^支払内容$/),
+      },
+      {
+        label: "支払方法",
+        fields: requiredFields(["payment_method"], /^支払方法/),
+      },
+      {
+        label: "支払日",
+        fields: requiredFields(["payment_due_date"], /^支払日$/),
+      },
+      {
+        label: "利用月",
+        fields: requiredFields(["usage_month"], /^利用月$/),
+      },
+      {
+        label: "￥通貨：合計支払金額または＄通貨：合計支払金額",
+        fields: requiredFields(["total_amount_jpy", "total_amount_usd"], /^(￥通貨合計支払金額|\$通貨合計支払金額)$/),
+      },
+      {
+        label: "銀行名",
+        fields: requiredFields(["bank_name"], /^銀行名$/),
+      },
+      {
+        label: "支店名",
+        fields: requiredFields(["bank_branch_name"], /^支店名$/),
+      },
+      {
+        label: "口座種別",
+        fields: requiredFields(["bank_account_type"], /^口座(?:種別|種類)$/),
+      },
+      {
+        label: "口座番号",
+        fields: requiredFields(["bank_account_number"], /^口座番号$/),
+      },
+      {
+        label: "口座名義フリガナ",
+        fields: requiredFields(["bank_account_kana"], /^口座名義(?:フリガナ|フリ仮名|カナ|ﾌﾘｶﾞﾅ|ﾌﾘ仮名|ｶﾅ)?$/),
+      },
+      {
+        label: "請求書発行日",
+        fields: requiredFields(["invoice_issue_date"], /^請求(?:書|者)発行日$/),
+      },
+    ];
+  }
+
+  function requiredFields(baseKeys, normalizedLabelPattern) {
+    const keys = Array.isArray(baseKeys) ? baseKeys : [baseKeys];
+    const found = [];
+    const used = new Set();
+
+    activeExtractionFields.forEach(function (field) {
+      const key = fieldKey(field);
+      const normalizedLabel = normalizeHeader(fieldLabel(field));
+      const matchesKey = keys.some(function (baseKey) {
+        return keyMatches(key, baseKey);
+      });
+      const matchesLabel = normalizedLabelPattern && normalizedLabelPattern.test(normalizedLabel);
+      if (!matchesKey && !matchesLabel) {
+        return;
+      }
+      if (used.has(key)) {
+        return;
+      }
+      used.add(key);
+      found.push(field);
+    });
+
+    return found;
+  }
+
+  function showSkyberryRequiredError(validation) {
+    const firstInvalid = validation.invalidRows[0];
+    if (!firstInvalid) {
+      return;
+    }
+
+    selectReviewItem(firstInvalid.item.id);
+    applyRequiredHighlights(firstInvalid.validation);
+    setReviewEditStatus(requiredValidationMessage(validation), "error");
+    els.reviewEditStatus.scrollIntoView({ behavior: "smooth", block: "center" });
+    sendClientLog("skyberry.excel.required_missing", {
+      fileName: displayName(firstInvalid.item.file),
+      missing: firstInvalid.validation.missingGroups.map(function (group) {
+        return group.label;
+      }),
+      invalidRows: validation.invalidRows.length,
+    });
+  }
+
+  function confirmSkyberryRequiredOverride(validation) {
+    const firstInvalid = validation.invalidRows[0];
+    if (!firstInvalid) {
+      return Promise.resolve(true);
+    }
+
+    const missingLabels = firstInvalid.validation.missingGroups.map(function (group) {
+      return group.label;
+    });
+
+    return new Promise(function (resolve) {
+      const modal = ensureSkyberryRequiredModal();
+      const exportButton = modal.querySelector("[data-required-export]");
+      const cancelButton = modal.querySelector("[data-required-cancel]");
+
+      const cleanup = function (result) {
+        modal.classList.add("is-hidden");
+        exportButton.removeEventListener("click", onExport);
+        cancelButton.removeEventListener("click", onCancel);
+        modal.removeEventListener("click", onBackdrop);
+        document.removeEventListener("keydown", onKeyDown);
+
+        if (result) {
+          sendClientLog("skyberry.excel.required_override_confirmed", {
+            fileName: displayName(firstInvalid.item.file),
+            missing: missingLabels,
+            invalidRows: validation.invalidRows.length,
+          });
+        }
+
+        resolve(result);
+      };
+
+      const onExport = function () {
+        cleanup(true);
+      };
+      const onCancel = function () {
+        cleanup(false);
+      };
+      const onBackdrop = function (event) {
+        if (event.target === modal) {
+          cleanup(false);
+        }
+      };
+      const onKeyDown = function (event) {
+        if (event.key === "Escape") {
+          cleanup(false);
+        }
+      };
+
+      exportButton.addEventListener("click", onExport);
+      cancelButton.addEventListener("click", onCancel);
+      modal.addEventListener("click", onBackdrop);
+      document.addEventListener("keydown", onKeyDown);
+      modal.classList.remove("is-hidden");
+      cancelButton.focus();
+    });
+  }
+
+  function ensureSkyberryRequiredModal() {
+    const existing = document.getElementById("requiredOverrideModal");
+    if (existing) {
+      return existing;
+    }
+
+    const modal = document.createElement("div");
+    modal.id = "requiredOverrideModal";
+    modal.className = "required-modal is-hidden";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", "requiredOverrideTitle");
+    modal.innerHTML = `
+      <div class="required-modal-card">
+        <h3 id="requiredOverrideTitle">未入力の必須項目があります</h3>
+        <p>未入力の必須項目がありますが、skyberry出力しますか？</p>
+        <div class="required-modal-actions">
+          <button type="button" data-required-cancel>入力画面に戻る</button>
+          <button type="button" class="primary-button" data-required-export>skyberry出力する</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    return modal;
+  }
+
+  function requiredValidationMessage(validation) {
+    const firstInvalid = validation.invalidRows[0];
+    const labels = firstInvalid.validation.missingGroups.map(function (group) {
+      return group.label;
+    });
+    const visibleLabels = labels.slice(0, 6).join("、");
+    const extraLabelCount = Math.max(labels.length - 6, 0);
+    const fieldSuffix = extraLabelCount > 0 ? `、ほか${extraLabelCount}項目` : "";
+    const rowSuffix = validation.invalidRows.length > 1 ? `（ほか${validation.invalidRows.length - 1}件の書類にも未入力があります）` : "";
+    return `必須項目が未入力です。赤枠の項目を入力してからskyberry Excel出力してください。対象: ${displayName(firstInvalid.item.file)} / 未入力: ${visibleLabels}${fieldSuffix}${rowSuffix}`;
+  }
+
+  function highlightCurrentReviewRequiredFields() {
+    if (!els.reviewForm || els.reviewForm.children.length === 0) {
+      return null;
+    }
+
+    const validation = validateSkyberryRequiredExtraction(reviewFormExtractionValues());
+    applyRequiredHighlights(validation);
+    return validation;
+  }
+
+  function reviewFormExtractionValues() {
+    const values = {};
+    activeExtractionFields.forEach(function (field) {
+      const key = fieldKey(field);
+      const input = els.reviewForm.querySelector(`[data-field-key="${cssEscape(key)}"]`);
+      values[key] = input ? input.value.trim() : null;
+    });
+    return values;
+  }
+
+  function applyRequiredHighlights(validation) {
+    els.reviewForm.querySelectorAll(".review-field").forEach(function (fieldElement) {
+      fieldElement.classList.remove("is-required-missing");
+      const input = fieldElement.querySelector("[data-field-key]");
+      if (input) {
+        input.removeAttribute("aria-invalid");
+      }
+    });
+
+    validation.missingGroups.forEach(function (group) {
+      const message = group.fields.length > 1 ? "どちらか一方の入力が必須です" : "必須項目です";
+      group.fields.forEach(function (field) {
+        const input = els.reviewForm.querySelector(`[data-field-key="${cssEscape(fieldKey(field))}"]`);
+        if (!input) {
+          return;
+        }
+        const fieldElement = input.closest(".review-field");
+        if (!fieldElement) {
+          return;
+        }
+        fieldElement.classList.add("is-required-missing");
+        input.setAttribute("aria-invalid", "true");
+        const requiredMessage = fieldElement.querySelector(".review-field-required-message");
+        if (requiredMessage) {
+          requiredMessage.textContent = message;
+        }
+      });
+    });
+  }
+
+  function openDatePickerIfAvailable(target) {
+    if (!(target instanceof HTMLInputElement) || target.dataset.datePicker !== "true") {
+      return;
+    }
+    if (typeof target.showPicker !== "function") {
+      return;
+    }
+
+    try {
+      target.showPicker();
+    } catch (error) {
     }
   }
 
@@ -3309,7 +3734,7 @@
       els.reviewPages.innerHTML = "";
     }
     els.reviewForm.innerHTML = "";
-    els.reviewEditStatus.textContent = "未選択";
+    setReviewEditStatus("未選択");
     renderReviewList();
   }
 
@@ -3388,6 +3813,11 @@
 
   function isBlank(value) {
     return value === null || value === undefined || String(value).trim() === "";
+  }
+
+  function setReviewEditStatus(message, mode) {
+    els.reviewEditStatus.textContent = message;
+    els.reviewEditStatus.className = mode ? mode : "";
   }
 
   function setAiStatus(message, mode) {
