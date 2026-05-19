@@ -63,6 +63,7 @@
     reviewEditStatus: document.getElementById("reviewEditStatus"),
     reviewFileName: document.getElementById("reviewFileName"),
     reviewForm: document.getElementById("reviewForm"),
+    reviewFormFileName: document.getElementById("reviewFormFileName"),
     reviewImage: document.getElementById("reviewImage"),
     reviewImageEmpty: document.getElementById("reviewImageEmpty"),
     reviewPages: document.getElementById("reviewPages"),
@@ -3079,6 +3080,9 @@
   function renderReviewPanel(item, extraction) {
     const pageUrls = pagePreviewUrlsForItem(item);
     els.reviewFileName.textContent = displayName(item.file);
+    if (els.reviewFormFileName) {
+      els.reviewFormFileName.textContent = `編集中: ${displayName(item.file)}`;
+    }
     els.reviewRouteLabel.textContent = reviewRouteText(item, pageUrls.length);
     els.reviewImage.src = pageUrls[0] || "";
     const viewerContent = renderReviewPages(pageUrls);
@@ -3616,6 +3620,10 @@
   }
 
   function applyRequiredHighlights(validation) {
+    if (els.reviewFormFileName) {
+      els.reviewFormFileName.classList.toggle("is-required-missing", validation.missingGroups.length > 0);
+    }
+
     els.reviewForm.querySelectorAll(".review-field").forEach(function (fieldElement) {
       fieldElement.classList.remove("is-required-missing");
       const input = fieldElement.querySelector("[data-field-key]");
@@ -3727,6 +3735,10 @@
   function clearReviewPanel() {
     state.currentReviewId = null;
     els.reviewFileName.textContent = "書類未選択";
+    if (els.reviewFormFileName) {
+      els.reviewFormFileName.textContent = "書類未選択";
+      els.reviewFormFileName.classList.remove("is-required-missing");
+    }
     els.reviewRouteLabel.textContent = "書類をアップロードして次へ進んでください。";
     els.reviewImage.removeAttribute("src");
     els.reviewImage.parentElement.classList.remove("has-image");
