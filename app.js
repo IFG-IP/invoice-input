@@ -904,6 +904,7 @@
       currentText: "抽出を開始しています。",
     });
     renderSelectedFiles();
+    const batchStartedAt = performance.now();
     sendClientLog("ai.batch.started", {
       count: candidates.length,
       model,
@@ -914,12 +915,14 @@
     let matched = 0;
     let succeeded = 0;
     let lastErrorMessage = "";
+    const tokenTotals = emptyTokenUsage();
     const skippedNoPreview = state.items.filter(function (item) {
       return !item.previewUrl;
     }).length;
 
     for (let index = 0; index < candidates.length; index += 1) {
       const item = candidates[index];
+      const itemStartedAt = performance.now();
       const row = appendAiPendingRow(item);
       updateProgress({
         title: "AI抽出中",
@@ -941,6 +944,7 @@
           },
         });
         const extraction = extractionResult.extraction;
+        addTokenUsage(tokenTotals, extractionResult.usage);
         const expected = findExpectedForItem(expectedValues, item);
         const comparison = compareExtraction(extraction, expected);
         state.extractions.set(item.id, extraction);
@@ -950,11 +954,14 @@
         compared += comparison.compared;
         matched += comparison.matched;
         updateAiRow(row, item, extraction, comparison);
+        const durationMs = Math.round(performance.now() - itemStartedAt);
         sendClientLog("ai.extraction.completed", {
           file: displayName(item.file),
           route: item.routeLabel,
           extraction,
           comparison,
+          durationMs,
+          tokenUsage: extractionResult.usage,
         });
         if (state.currentReviewId === null) {
           selectReviewItem(item.id);
@@ -965,10 +972,12 @@
         updateAiErrorRow(row, item, error);
         updateSelectedFileStatus(item.id, "AI失敗", "failed");
         renderReviewList();
+        const durationMs = Math.round(performance.now() - itemStartedAt);
         sendClientLog("ai.extraction.failed", {
           file: displayName(item.file),
           route: item.routeLabel,
           error: lastErrorMessage,
+          durationMs,
         });
       }
       updateProgress({
@@ -988,6 +997,15 @@
       const failureMessage = lastErrorMessage
         ? `抽出できた書類がありませんでした。最後のエラー: ${lastErrorMessage}`
         : "抽出できた書類がありませんでした。";
+      const batchDurationMs = Math.round(performance.now() - batchStartedAt);
+      sendClientLog("ai.batch.failed", {
+        succeeded,
+        failed,
+        skippedNoPreview,
+        durationMs: batchDurationMs,
+        tokenUsage: tokenTotals,
+        error: lastErrorMessage,
+      });
       setAiStatus(failureMessage, "error");
       updateProgress({
         title: "AI抽出失敗",
@@ -999,18 +1017,29 @@
     }
 
     const hasPartialFailure = failed > 0 || skippedNoPreview > 0;
+    const batchDurationMs = Math.round(performance.now() - batchStartedAt);
+    logTimingToConsole("AI抽出全体完了", {
+      duration: formatDurationMs(batchDurationMs),
+      durationMs: batchDurationMs,
+      succeeded,
+      failed,
+      skippedNoPreview,
+      processedPerMinute: throughputPerMinute(succeeded + failed, batchDurationMs),
+      tokensPerMinute: throughputPerMinute(tokenTotals.totalTokenCount, batchDurationMs),
+      tokenUsage: tokenTotals,
+    });
     if (hasPartialFailure) {
       const skippedText = skippedNoPreview > 0 ? `、画像表示できない書類${skippedNoPreview}件` : "";
       const failedText = failed > 0 ? `、AI失敗${failed}件` : "";
       setAiStatus(`抽出成功${succeeded}件${failedText}${skippedText}です。Excel出力前に未抽出の書類を確認してください。`, "error");
-      sendClientLog("ai.batch.completed", { compared, matched, succeeded, failed, skippedNoPreview });
+      sendClientLog("ai.batch.completed", { compared, matched, succeeded, failed, skippedNoPreview, durationMs: batchDurationMs, tokenUsage: tokenTotals });
     } else if (compared > 0) {
       const score = Math.round((matched / compared) * 100);
       setAiStatus(`処理が完了しました。一致率 ${score}% (${matched}/${compared})`, "ready");
-      sendClientLog("ai.batch.completed", { compared, matched, score, succeeded, failed, skippedNoPreview });
+      sendClientLog("ai.batch.completed", { compared, matched, score, succeeded, failed, skippedNoPreview, durationMs: batchDurationMs, tokenUsage: tokenTotals });
     } else {
       setAiStatus("処理が完了しました。目視確認で内容を確認してください。", "ready");
-      sendClientLog("ai.batch.completed", { compared, matched, succeeded, failed, skippedNoPreview });
+      sendClientLog("ai.batch.completed", { compared, matched, succeeded, failed, skippedNoPreview, durationMs: batchDurationMs, tokenUsage: tokenTotals });
     }
     updateProgress({
       title: "AI抽出完了",
@@ -1029,11 +1058,33 @@
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const attemptStartedAt = performance.now();
+      sendClientLog("ai.extraction.attempt.started", {
+        file: displayName(item.file),
+        attempt,
+        maxAttempts,
+      });
       try {
-        const extraction = await extractFieldsWithGemini(item, model);
-        return { extraction, attempts: attempt };
+        const result = await extractFieldsWithGemini(item, model);
+        const durationMs = Math.round(performance.now() - attemptStartedAt);
+        sendClientLog("ai.extraction.attempt.completed", {
+          file: displayName(item.file),
+          attempt,
+          maxAttempts,
+          durationMs,
+          tokenUsage: result.usage,
+        });
+        return { extraction: result.extraction, usage: result.usage, attempts: attempt };
       } catch (error) {
         lastError = error;
+        const durationMs = Math.round(performance.now() - attemptStartedAt);
+        sendClientLog("ai.extraction.attempt.failed", {
+          file: displayName(item.file),
+          attempt,
+          maxAttempts,
+          durationMs,
+          error: error.message || "AI抽出に失敗しました。",
+        });
         if (attempt >= maxAttempts) {
           break;
         }
@@ -1059,6 +1110,73 @@
     const message = String(error && error.message ? error.message : "").toLowerCase();
     const looksRateLimited = /429|quota|rate|resource_exhausted|temporarily|unavailable|timeout|503/.test(message);
     return (looksRateLimited ? 5000 : AI_RETRY_DELAY_MS) * attempt;
+  }
+
+  function logTimingToConsole(label, detail) {
+    const payload = Object.assign({
+      time: new Date().toLocaleTimeString("ja-JP"),
+    }, detail || {});
+    console.log(`[${label}]`, payload);
+  }
+
+  function formatDurationMs(ms) {
+    const value = Math.max(0, Number(ms) || 0);
+    if (value < 1000) {
+      return `${value}ms`;
+    }
+
+    const seconds = value / 1000;
+    if (seconds < 60) {
+      return `${seconds.toFixed(1)}秒`;
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.round(seconds % 60);
+    return `${minutes}分${String(remainingSeconds).padStart(2, "0")}秒`;
+  }
+
+  function throughputPerMinute(count, durationMs) {
+    const value = Math.max(0, Number(count) || 0);
+    const minutes = Math.max(Number(durationMs) || 0, 1) / 60000;
+    return Number((value / minutes).toFixed(2));
+  }
+
+  function emptyTokenUsage() {
+    return {
+      promptTokenCount: 0,
+      candidatesTokenCount: 0,
+      thoughtsTokenCount: 0,
+      cachedContentTokenCount: 0,
+      totalTokenCount: 0,
+    };
+  }
+
+  function normalizeTokenUsage(payload) {
+    const source = (payload && (payload.usageMetadata || payload.usage)) || {};
+    const usage = emptyTokenUsage();
+    usage.promptTokenCount = numericTokenCount(source.promptTokenCount || source.inputTokenCount || source.input_tokens);
+    usage.candidatesTokenCount = numericTokenCount(source.candidatesTokenCount || source.outputTokenCount || source.output_tokens);
+    usage.thoughtsTokenCount = numericTokenCount(source.thoughtsTokenCount || source.thoughts_tokens);
+    usage.cachedContentTokenCount = numericTokenCount(source.cachedContentTokenCount || source.cached_content_token_count);
+    usage.totalTokenCount = numericTokenCount(source.totalTokenCount || source.total_tokens);
+    if (!usage.totalTokenCount) {
+      usage.totalTokenCount = usage.promptTokenCount + usage.candidatesTokenCount + usage.thoughtsTokenCount;
+    }
+    return usage;
+  }
+
+  function numericTokenCount(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
+  }
+
+  function addTokenUsage(total, usage) {
+    const target = total || emptyTokenUsage();
+    const source = usage || emptyTokenUsage();
+    Object.keys(emptyTokenUsage()).forEach(function (key) {
+      target[key] += numericTokenCount(source[key]);
+    });
+    return target;
   }
 
   function delay(ms) {
@@ -1169,7 +1287,10 @@
     }
 
     const text = extractResponseText(payload);
-    return normalizeExtractionResult(JSON.parse(text), item);
+    return {
+      extraction: normalizeExtractionResult(JSON.parse(text), item),
+      usage: normalizeTokenUsage(payload),
+    };
   }
 
   function geminiPartsForItem(item) {
@@ -3568,6 +3689,8 @@
     els.exportSkyberryButton.disabled = true;
     setReviewEditStatus(`未抽出の書類${retryableItems.length}件を再抽出しています...`);
 
+    const retryStartedAt = performance.now();
+    const tokenTotals = emptyTokenUsage();
     let succeeded = 0;
     let failed = 0;
     try {
@@ -3586,6 +3709,7 @@
             },
           });
           const extraction = extractionResult.extraction;
+          addTokenUsage(tokenTotals, extractionResult.usage);
           const expected = findExpectedForItem(expectedValues, item);
           const comparison = compareExtraction(extraction, expected);
           state.extractions.set(item.id, extraction);
@@ -3599,6 +3723,7 @@
           sendClientLog("ai.extraction.retry_succeeded", {
             file: displayName(item.file),
             attempts: extractionResult.attempts,
+            tokenUsage: extractionResult.usage,
           });
         } catch (error) {
           failed += 1;
@@ -3614,6 +3739,15 @@
     } finally {
       els.exportSkyberryButton.disabled = false;
     }
+
+    const retryDurationMs = Math.round(performance.now() - retryStartedAt);
+    sendClientLog("ai.extraction.retry_batch_completed", {
+      retried: retryableItems.length,
+      succeeded,
+      failed,
+      durationMs: retryDurationMs,
+      tokenUsage: tokenTotals,
+    });
 
     if (failed > 0) {
       setReviewEditStatus(`再抽出で${succeeded}件成功、${failed}件失敗しました。`, "error");
