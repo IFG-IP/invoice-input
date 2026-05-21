@@ -6,6 +6,8 @@
   const PDF_TEXT_PROMPT_LIMIT = 14000;
   const PDF_RENDER_MAX_EDGE = 2200;
   const PDF_RENDER_JPEG_QUALITY = 0.88;
+  const AI_EXTRACTION_MAX_ATTEMPTS = 2;
+  const AI_RETRY_DELAY_MS = 1200;
   const PDFJS_VERSION = "3.11.174";
   const PDFJS_CDN_BASE = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}`;
   const PDFJS_DIST_CDN_BASE = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}`;
@@ -208,11 +210,12 @@
 
   async function handleFiles(files) {
     const targetFiles = files.filter(isSupportedFile);
+    const ignoredCount = files.length - targetFiles.length;
 
     sendClientLog("files.selected", {
       selected: files.length,
       accepted: targetFiles.length,
-      ignored: files.length - targetFiles.length,
+      ignored: ignoredCount,
     });
 
     if (targetFiles.length === 0) {
@@ -220,6 +223,10 @@
         renderEmpty("対応ファイルが見つかりませんでした。");
       }
       return;
+    }
+
+    if (ignoredCount > 0) {
+      setAiStatus(`対応ファイル${targetFiles.length}件を取り込みます。対象外ファイル${ignoredCount}件は除外しました。`, "error");
     }
 
     const selectedEntries = targetFiles.map(function (file) {
@@ -860,6 +867,12 @@
 
   async function runAiExtraction() {
     const model = els.modelInput.value.trim() || "gemini-2.5-flash";
+    if (state.items.some(function (item) {
+      return !item.previewUrl;
+    })) {
+      await retryPreviewlessItems();
+    }
+
     const candidates = state.items.filter(function (item) {
       return Boolean(item.previewUrl);
     });
@@ -897,9 +910,13 @@
     });
 
     let compared = 0;
+    let failed = 0;
     let matched = 0;
     let succeeded = 0;
     let lastErrorMessage = "";
+    const skippedNoPreview = state.items.filter(function (item) {
+      return !item.previewUrl;
+    }).length;
 
     for (let index = 0; index < candidates.length; index += 1) {
       const item = candidates[index];
@@ -911,7 +928,19 @@
         currentText: displayName(item.file),
       });
       try {
-        const extraction = await extractFieldsWithGemini(item, model);
+        const extractionResult = await extractFieldsWithRetry(item, model, {
+          onRetry: function (attempt, error) {
+            updateAiRetryRow(row, item, error, attempt, AI_EXTRACTION_MAX_ATTEMPTS);
+            updateSelectedFileStatus(item.id, `再抽出中 (${attempt}/${AI_EXTRACTION_MAX_ATTEMPTS})`, "reading");
+            updateProgress({
+              title: "AI再抽出中",
+              current: index,
+              total: candidates.length,
+              currentText: displayName(item.file),
+            });
+          },
+        });
+        const extraction = extractionResult.extraction;
         const expected = findExpectedForItem(expectedValues, item);
         const comparison = compareExtraction(extraction, expected);
         state.extractions.set(item.id, extraction);
@@ -931,6 +960,7 @@
           selectReviewItem(item.id);
         }
       } catch (error) {
+        failed += 1;
         lastErrorMessage = error.message || "AI抽出に失敗しました。";
         updateAiErrorRow(row, item, error);
         updateSelectedFileStatus(item.id, "AI失敗", "failed");
@@ -968,21 +998,138 @@
       return false;
     }
 
-    if (compared > 0) {
+    const hasPartialFailure = failed > 0 || skippedNoPreview > 0;
+    if (hasPartialFailure) {
+      const skippedText = skippedNoPreview > 0 ? `、画像表示できない書類${skippedNoPreview}件` : "";
+      const failedText = failed > 0 ? `、AI失敗${failed}件` : "";
+      setAiStatus(`抽出成功${succeeded}件${failedText}${skippedText}です。Excel出力前に未抽出の書類を確認してください。`, "error");
+      sendClientLog("ai.batch.completed", { compared, matched, succeeded, failed, skippedNoPreview });
+    } else if (compared > 0) {
       const score = Math.round((matched / compared) * 100);
       setAiStatus(`処理が完了しました。一致率 ${score}% (${matched}/${compared})`, "ready");
-      sendClientLog("ai.batch.completed", { compared, matched, score });
+      sendClientLog("ai.batch.completed", { compared, matched, score, succeeded, failed, skippedNoPreview });
     } else {
       setAiStatus("処理が完了しました。目視確認で内容を確認してください。", "ready");
-      sendClientLog("ai.batch.completed", { compared, matched });
+      sendClientLog("ai.batch.completed", { compared, matched, succeeded, failed, skippedNoPreview });
     }
     updateProgress({
       title: "AI抽出完了",
       current: candidates.length,
       total: candidates.length,
-      currentText: `${succeeded}件の抽出が完了しました。`,
+      currentText: hasPartialFailure
+        ? `抽出成功${succeeded}件、出力対象外${failed + skippedNoPreview}件です。`
+        : `${succeeded}件の抽出が完了しました。`,
     });
     return true;
+  }
+
+  async function extractFieldsWithRetry(item, model, options) {
+    const settings = options || {};
+    const maxAttempts = Math.max(1, Number(settings.maxAttempts || AI_EXTRACTION_MAX_ATTEMPTS));
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const extraction = await extractFieldsWithGemini(item, model);
+        return { extraction, attempts: attempt };
+      } catch (error) {
+        lastError = error;
+        if (attempt >= maxAttempts) {
+          break;
+        }
+
+        const nextAttempt = attempt + 1;
+        if (typeof settings.onRetry === "function") {
+          settings.onRetry(nextAttempt, error);
+        }
+        sendClientLog("ai.extraction.retry", {
+          file: displayName(item.file),
+          attempt: nextAttempt,
+          maxAttempts,
+          error: error.message || "AI抽出に失敗しました。",
+        });
+        await delay(retryDelayMsForError(error, attempt));
+      }
+    }
+
+    throw lastError || new Error("AI抽出に失敗しました。");
+  }
+
+  function retryDelayMsForError(error, attempt) {
+    const message = String(error && error.message ? error.message : "").toLowerCase();
+    const looksRateLimited = /429|quota|rate|resource_exhausted|temporarily|unavailable|timeout|503/.test(message);
+    return (looksRateLimited ? 5000 : AI_RETRY_DELAY_MS) * attempt;
+  }
+
+  function delay(ms) {
+    return new Promise(function (resolve) {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  async function retryPreviewlessItems() {
+    const retryItems = state.items.filter(function (item) {
+      return !item.previewUrl;
+    });
+    if (retryItems.length === 0) {
+      return { retried: 0, succeeded: 0, failed: 0 };
+    }
+
+    let succeeded = 0;
+    let failed = 0;
+    updateProgress({
+      title: "ファイル再読込中",
+      current: 0,
+      total: retryItems.length,
+      currentText: "プレビューを作れなかった書類を再読込しています。",
+    });
+
+    for (let index = 0; index < retryItems.length; index += 1) {
+      const item = retryItems[index];
+      updateSelectedFileStatus(item.id, "再読込中", "reading");
+      updateProgress({
+        title: "ファイル再読込中",
+        current: index,
+        total: retryItems.length,
+        currentText: displayName(item.file),
+      });
+
+      try {
+        const retried = await analyzeFile(item.file);
+        const previousId = item.id;
+        revokeItemObjectUrl(item);
+        Object.assign(item, retried, { id: previousId });
+        const entry = selectedEntryForItem(previousId);
+        if (entry && entry.row) {
+          updateRow(entry.row, item);
+        }
+        updateSelectedFileStatus(previousId, item.previewUrl ? "読込完了" : "読込完了（要確認）", item.previewUrl ? "ready" : "attention");
+        logFileAnalysis(item);
+        if (item.previewUrl) {
+          succeeded += 1;
+        } else {
+          failed += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        updateSelectedFileStatus(item.id, "読込失敗", "failed");
+        logFileAnalysis(item, error);
+      }
+
+      updateProgress({
+        title: "ファイル再読込中",
+        current: index + 1,
+        total: retryItems.length,
+        currentText: displayName(item.file),
+      });
+    }
+
+    recalculateSummary();
+    renderSummary();
+    renderSelectedFiles();
+    renderReviewList();
+
+    return { retried: retryItems.length, succeeded, failed };
   }
 
   async function extractFieldsWithGemini(item, model) {
@@ -2992,6 +3139,22 @@
     `;
   }
 
+  function updateAiRetryRow(row, item, error, attempt, maxAttempts) {
+    row.dataset.itemId = String(item.id);
+    const detail = error && error.message
+      ? `前回エラー: ${error.message}`
+      : "未抽出のため再抽出しています。";
+    row.innerHTML = `
+      <td>
+        <span class="file-name">${escapeHtml(displayName(item.file))}</span>
+        <span class="file-meta">${escapeHtml(item.routeLabel)}</span>
+      </td>
+      <td><span class="spinner"></span>再抽出中 (${attempt}/${maxAttempts})</td>
+      <td>-</td>
+      <td><pre class="json-block">${escapeHtml(detail)}</pre></td>
+    `;
+  }
+
   function renderFieldList(extraction) {
     const rows = activeExtractionFields.map(function (field) {
       const key = fieldKey(field);
@@ -3270,20 +3433,25 @@
 
     saveReviewEditsIfSelected();
 
-    const rows = state.items
-      .filter(function (item) {
-        return state.extractions.has(item.id);
-      })
-      .map(function (item) {
-        return {
-          item,
-          extraction: state.extractions.get(item.id),
-        };
-      });
+    const retryResult = await retryUnexportedExtractionsBeforeExport();
+    if (retryResult.blocked) {
+      return;
+    }
+
+    const rows = buildSkyberryExportRows();
 
     if (rows.length === 0) {
       setReviewEditStatus("出力する抽出データがありません", "error");
       return;
+    }
+
+    const unexportedItems = unexportedSkyberryItems();
+    if (unexportedItems.length > 0) {
+      showSkyberryUnexportedWarning(unexportedItems, rows.length);
+      const shouldContinueUnexported = await confirmSkyberryUnexportedOverride(unexportedItems, rows.length);
+      if (!shouldContinueUnexported) {
+        return;
+      }
     }
 
     const requiredValidation = validateSkyberryRequiredRows(rows);
@@ -3356,6 +3524,213 @@
     if (state.currentReviewId !== null && els.reviewForm.children.length > 0) {
       saveReviewEdits({ silent: true });
     }
+  }
+
+  function buildSkyberryExportRows() {
+    return state.items
+      .filter(function (item) {
+        return state.extractions.has(item.id);
+      })
+      .map(function (item) {
+        return {
+          item,
+          extraction: state.extractions.get(item.id),
+        };
+      });
+  }
+
+  function unexportedSkyberryItems() {
+    return state.items.filter(function (item) {
+      return !state.extractions.has(item.id);
+    });
+  }
+
+  async function retryUnexportedExtractionsBeforeExport() {
+    await retryPreviewlessItems();
+
+    const retryableItems = unexportedSkyberryItems().filter(function (item) {
+      return Boolean(item.previewUrl);
+    });
+    if (retryableItems.length === 0) {
+      return { blocked: false, retried: 0, succeeded: 0, failed: 0 };
+    }
+
+    const model = els.modelInput.value.trim() || "gemini-2.5-flash";
+    let expectedValues = {};
+    try {
+      expectedValues = parseExpectedJson();
+      await ensureApiProxyReady();
+    } catch (error) {
+      setReviewEditStatus(error.message, "error");
+      return { blocked: true, retried: 0, succeeded: 0, failed: retryableItems.length };
+    }
+
+    els.exportSkyberryButton.disabled = true;
+    setReviewEditStatus(`未抽出の書類${retryableItems.length}件を再抽出しています...`);
+
+    let succeeded = 0;
+    let failed = 0;
+    try {
+      for (let index = 0; index < retryableItems.length; index += 1) {
+        const item = retryableItems[index];
+        const row = ensureAiRowForItem(item);
+        updateAiRetryRow(row, item, null, 1, AI_EXTRACTION_MAX_ATTEMPTS);
+        updateSelectedFileStatus(item.id, "再抽出中", "reading");
+        setReviewEditStatus(`未抽出の書類を再抽出しています (${index + 1}/${retryableItems.length})`);
+
+        try {
+          const extractionResult = await extractFieldsWithRetry(item, model, {
+            onRetry: function (attempt, error) {
+              updateAiRetryRow(row, item, error, attempt, AI_EXTRACTION_MAX_ATTEMPTS);
+              updateSelectedFileStatus(item.id, `再抽出中 (${attempt}/${AI_EXTRACTION_MAX_ATTEMPTS})`, "reading");
+            },
+          });
+          const extraction = extractionResult.extraction;
+          const expected = findExpectedForItem(expectedValues, item);
+          const comparison = compareExtraction(extraction, expected);
+          state.extractions.set(item.id, extraction);
+          updateSelectedFileStatus(item.id, "AI抽出済み", "extracted");
+          updateAiRow(row, item, extraction, comparison);
+          renderReviewList();
+          if (state.currentReviewId === null) {
+            selectReviewItem(item.id);
+          }
+          succeeded += 1;
+          sendClientLog("ai.extraction.retry_succeeded", {
+            file: displayName(item.file),
+            attempts: extractionResult.attempts,
+          });
+        } catch (error) {
+          failed += 1;
+          updateAiErrorRow(row, item, error);
+          updateSelectedFileStatus(item.id, "AI失敗", "failed");
+          renderReviewList();
+          sendClientLog("ai.extraction.retry_failed", {
+            file: displayName(item.file),
+            error: error.message || "AI抽出に失敗しました。",
+          });
+        }
+      }
+    } finally {
+      els.exportSkyberryButton.disabled = false;
+    }
+
+    if (failed > 0) {
+      setReviewEditStatus(`再抽出で${succeeded}件成功、${failed}件失敗しました。`, "error");
+    } else if (succeeded > 0) {
+      setReviewEditStatus(`再抽出で${succeeded}件を追加しました。`, "ready");
+    }
+
+    return {
+      blocked: false,
+      retried: retryableItems.length,
+      succeeded,
+      failed,
+    };
+  }
+
+  function ensureAiRowForItem(item) {
+    let row = els.aiResultRows.querySelector(`tr[data-item-id="${item.id}"]`);
+    if (row) {
+      return row;
+    }
+
+    row = appendAiPendingRow(item);
+    row.dataset.itemId = String(item.id);
+    return row;
+  }
+
+  function showSkyberryUnexportedWarning(unexportedItems, exportRowCount) {
+    const firstReviewable = unexportedItems.find(function (item) {
+      return Boolean(item.previewUrl);
+    });
+    if (firstReviewable) {
+      selectReviewItem(firstReviewable.id);
+    }
+    setReviewEditStatus(`AI抽出できていない書類が${unexportedItems.length}件あります。Excelには${exportRowCount}件のみ出力されます。`, "error");
+    els.reviewEditStatus.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function confirmSkyberryUnexportedOverride(unexportedItems, exportRowCount) {
+    if (!unexportedItems || unexportedItems.length === 0) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise(function (resolve) {
+      const modal = ensureSkyberryUnexportedModal();
+      const exportButton = modal.querySelector("[data-unexported-export]");
+      const cancelButton = modal.querySelector("[data-unexported-cancel]");
+      const message = modal.querySelector("[data-unexported-message]");
+      const list = modal.querySelector("[data-unexported-list]");
+      const previewItems = unexportedItems.slice(0, 6);
+      const extraCount = Math.max(unexportedItems.length - previewItems.length, 0);
+
+      message.textContent = `AI抽出できていない書類が${unexportedItems.length}件あります。Excelには${exportRowCount}件のみ出力されます。続けますか？`;
+      list.innerHTML = previewItems.map(function (item) {
+        const reason = item.previewUrl ? "AI未抽出" : "読込失敗またはプレビューなし";
+        return `<li><span>${escapeHtml(displayName(item.file))}</span><small>${escapeHtml(reason)}</small></li>`;
+      }).join("") + (extraCount > 0 ? `<li><span>ほか${extraCount}件</span></li>` : "");
+
+      const cleanup = function (result) {
+        modal.classList.add("is-hidden");
+        exportButton.removeEventListener("click", onExport);
+        cancelButton.removeEventListener("click", onCancel);
+        modal.removeEventListener("click", onBackdrop);
+        document.removeEventListener("keydown", onKeyDown);
+        resolve(result);
+      };
+
+      const onExport = function () {
+        cleanup(true);
+      };
+      const onCancel = function () {
+        cleanup(false);
+      };
+      const onBackdrop = function (event) {
+        if (event.target === modal) {
+          cleanup(false);
+        }
+      };
+      const onKeyDown = function (event) {
+        if (event.key === "Escape") {
+          cleanup(false);
+        }
+      };
+
+      exportButton.addEventListener("click", onExport);
+      cancelButton.addEventListener("click", onCancel);
+      modal.addEventListener("click", onBackdrop);
+      document.addEventListener("keydown", onKeyDown);
+      modal.classList.remove("is-hidden");
+      cancelButton.focus();
+    });
+  }
+
+  function ensureSkyberryUnexportedModal() {
+    const existing = document.getElementById("unexportedOverrideModal");
+    if (existing) {
+      return existing;
+    }
+
+    const modal = document.createElement("div");
+    modal.id = "unexportedOverrideModal";
+    modal.className = "required-modal is-hidden";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", "unexportedOverrideTitle");
+    modal.innerHTML = `
+      <div class="required-modal-card">
+        <h3 id="unexportedOverrideTitle">出力されない書類があります</h3>
+        <p data-unexported-message></p>
+        <ul class="required-modal-list" data-unexported-list></ul>
+        <div class="required-modal-actions">
+          <button type="button" data-unexported-cancel>入力画面に戻る</button>
+          <button type="button" class="primary-button" data-unexported-export>このまま出力する</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    return modal;
   }
 
   function validateSkyberryRequiredRows(rows) {
@@ -3966,9 +4341,7 @@
   }
 
   function updateSelectedFileStatus(itemId, status, statusKey) {
-    const entry = state.selectedFiles.find(function (candidate) {
-      return candidate.itemId === itemId;
-    });
+    const entry = selectedEntryForItem(itemId);
     if (!entry) {
       return;
     }
@@ -3977,6 +4350,12 @@
       entry.statusKey = statusKey;
     }
     renderSelectedFiles();
+  }
+
+  function selectedEntryForItem(itemId) {
+    return state.selectedFiles.find(function (candidate) {
+      return candidate.itemId === itemId;
+    });
   }
 
   async function collectDroppedFiles(dataTransfer) {

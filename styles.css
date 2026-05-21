@@ -248,6 +248,37 @@ h2 {
   line-height: 1.7;
 }
 
+.required-modal-list {
+  display: grid;
+  max-height: 180px;
+  gap: 8px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #fee2e2;
+  border-radius: 8px;
+  background: #fff7f7;
+  color: var(--ink);
+  font-size: 13px;
+  list-style: none;
+}
+
+.required-modal-list li {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.required-modal-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.required-modal-list small {
+  color: #9b1c1c;
+}
+
 .required-modal-actions {
   display: flex;
   justify-content: flex-end;
