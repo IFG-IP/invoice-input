@@ -8,6 +8,7 @@
   const PDF_RENDER_JPEG_QUALITY = 0.88;
   const AI_EXTRACTION_MAX_ATTEMPTS = 2;
   const AI_RETRY_DELAY_MS = 1200;
+  const PAYMENT_DESCRIPTION_MAX_LENGTH = 30;
   const PDFJS_VERSION = "3.11.174";
   const PDFJS_CDN_BASE = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}`;
   const PDFJS_DIST_CDN_BASE = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}`;
@@ -17,6 +18,53 @@
   const API_BASE_URL = normalizeApiBaseUrl(window.APP_CONFIG && window.APP_CONFIG.apiBaseUrl);
   const DEFAULT_TEMPLATE_URL = apiUrl("/api/template/extraction-fields");
   const IMAGE_TYPES = new Set(["jpg", "jpeg", "png", "heic", "heif"]);
+  const ACCOUNTING_USE_FIELD_KEYS = new Set([
+    "voucher_type",
+    "voucher_date",
+    "supplier_employee_code",
+    "payee_type",
+    "sub_account",
+    "liability_account",
+    "sub_accounting_code",
+    "detail_account",
+    "tax_category",
+    "counterparty_code",
+    "initial_stock",
+  ]);
+  const REVIEW_FIELD_ORDER = [
+    "approval_no",
+    "invoice_issue_date",
+    "receipt_method",
+    "payment_method",
+    "payer_company_code",
+    "vendor",
+    "vendor_code",
+    "subtotal_amount_jpy",
+    "subtotal_amount_usd",
+    "subtotal_amount_other",
+    "subtotal_amount",
+    "payment_description",
+    "payment_due_date",
+    "credit_card_application_no",
+    "usage_month",
+    "contract_exists",
+    "auto_renewal",
+    "contract_start_date",
+    "contract_end_date",
+    "summary",
+    "total_amount_jpy",
+    "total_amount_usd",
+    "total_amount_other",
+    "total_amount",
+    "bank_name",
+    "bank_branch_name",
+    "bank_account_type",
+    "bank_account_number",
+    "bank_account_kana",
+  ];
+  const REVIEW_DEDUPED_FIELD_KEYS = new Set([
+    "payment_due_date",
+  ]);
   const EXTRACTION_FIELDS = [
     ["date", "日付"],
     ["vendor", "取引先"],
@@ -47,7 +95,9 @@
     exportSkyberryButton: document.getElementById("exportSkyberryButton"),
     expectedJsonInput: document.getElementById("expectedJsonInput"),
     fileInput: document.getElementById("fileInput"),
+    fileSelectButton: document.getElementById("fileSelectButton"),
     folderInput: document.getElementById("folderInput"),
+    folderSelectButton: document.getElementById("folderSelectButton"),
     imageCount: document.getElementById("imageCount"),
     jpegQuality: document.getElementById("jpegQuality"),
     jpegQualityValue: document.getElementById("jpegQualityValue"),
@@ -79,6 +129,7 @@
     selectedFileList: document.getElementById("selectedFileList"),
     selectedFileSummary: document.getElementById("selectedFileSummary"),
     totalCount: document.getElementById("totalCount"),
+    uploadChoiceButton: document.getElementById("uploadChoiceButton"),
     uploadPage: document.getElementById("uploadPage"),
   };
 
@@ -171,11 +222,33 @@
     event.target.value = "";
   });
 
-  els.dropZone.addEventListener("click", function () {
+  els.uploadChoiceButton.addEventListener("click", function (event) {
+    event.stopPropagation();
+    els.fileInput.click();
+  });
+
+  els.fileSelectButton.addEventListener("click", function (event) {
+    event.stopPropagation();
+    els.fileInput.click();
+  });
+
+  els.folderSelectButton.addEventListener("click", function (event) {
+    event.stopPropagation();
+    els.folderInput.click();
+  });
+
+  els.dropZone.addEventListener("click", function (event) {
+    if (event.target instanceof Element && event.target.closest("button")) {
+      return;
+    }
     els.fileInput.click();
   });
 
   els.dropZone.addEventListener("keydown", function (event) {
+    if (event.target instanceof Element && event.target.closest("button")) {
+      return;
+    }
+
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       els.fileInput.click();
@@ -1329,6 +1402,9 @@
       if (keyMatches(key, "payment_method")) {
         extraction[key] = normalizePaymentMethod(extraction[key], extraction, item);
       }
+      if (keyMatches(key, "payer_company_code")) {
+        extraction[key] = normalizePayerCompanyCode(extraction[key]);
+      }
       if (keyMatches(key, "usage_month")) {
         extraction[key] = normalizeUsageMonth(extraction[key]);
       }
@@ -1344,14 +1420,21 @@
       if (key === "row_no") {
         extraction[key] = null;
       }
+      if (isAccountingUseFieldKey(key)) {
+        extraction[key] = null;
+      }
     });
 
     applyDocumentTypeHints(extraction, item);
     fillExplicitStructuredFields(extraction, item);
     cleanPaymentContentFields(extraction, item);
     fillExplicitPaymentContentFields(extraction, item);
+    limitPaymentDescriptionFields(extraction);
+    clearExtractedNotesFields(extraction);
     fixVendorFromTextSample(extraction, item);
     fillSummaryFields(extraction);
+    applyPayerCompanyCodeHints(extraction, item);
+    applyUploadedFileNameFields(extraction, item);
     return extraction;
   }
 
@@ -1503,7 +1586,7 @@
       return "4";
     }
     if (/^1$|紙|原本/.test(compact)) {
-      return "1";
+      return "2";
     }
     if (/^2$|データ|データー|電子|PDF|メール|メール添付/.test(compact)) {
       return "2";
@@ -1514,7 +1597,7 @@
 
   function defaultReceiptMethod(item) {
     if (!item) {
-      return null;
+      return "2";
     }
 
     if (item.route === "pdf") {
@@ -1522,10 +1605,10 @@
     }
 
     if (item.route === "image" || item.routeLabel === "画像PDF") {
-      return "1";
+      return "2";
     }
 
-    return null;
+    return "2";
   }
 
   function normalizePaymentMethod(value, extraction, item) {
@@ -1820,7 +1903,7 @@
     if (!Number.isFinite(m) || m < 1 || m > 12) {
       return null;
     }
-    return `${y}-${m}`;
+    return `${y}/${String(m).padStart(2, "0")}`;
   }
 
   function extractExplicitBankAccountType(text) {
@@ -2054,6 +2137,92 @@
     return key ? source[key] : null;
   }
 
+  function normalizePayerCompanyCode(value) {
+    if (isBlank(value)) {
+      return null;
+    }
+
+    const source = String(value).trim();
+    if (source === "635") {
+      return "635";
+    }
+
+    if (containsPetLifeCompanyName(source)) {
+      return "635";
+    }
+
+    return source;
+  }
+
+  function applyPayerCompanyCodeHints(extraction, item) {
+    Object.keys(extraction).forEach(function (key) {
+      if (!keyMatches(key, "payer_company_code")) {
+        return;
+      }
+
+      const normalized = normalizePayerCompanyCode(extraction[key]);
+      extraction[key] = isBlank(normalized)
+        ? inferPayerCompanyCode(extraction, item)
+        : normalized;
+    });
+  }
+
+  function applyUploadedFileNameFields(extraction, item) {
+    const fileName = uploadedFileName(item);
+    if (isBlank(fileName)) {
+      return;
+    }
+
+    Object.keys(extraction).forEach(function (key) {
+      if (keyMatches(key, "invoice_original_1")) {
+        extraction[key] = fileName;
+      }
+    });
+  }
+
+  function uploadedFileName(item) {
+    if (!item || !item.file) {
+      return null;
+    }
+    return item.file.name || displayName(item.file);
+  }
+
+  function inferPayerCompanyCode(extraction, item) {
+    const directValue = firstValueByBaseKey(extraction, "payer_company_code");
+    const normalizedDirectValue = normalizePayerCompanyCode(directValue);
+    if (!isBlank(normalizedDirectValue)) {
+      return normalizedDirectValue;
+    }
+
+    if (hasPetLifePayerContext(item && item.textSample)) {
+      return "635";
+    }
+
+    return null;
+  }
+
+  function containsPetLifeCompanyName(value) {
+    const compact = normalizeHeader(String(value || "").normalize ? String(value || "").normalize("NFKC") : value).toUpperCase();
+    return compact.includes("\u30da\u30c3\u30c8\u30e9\u30a4\u30d5") || compact.includes("PETLIFE");
+  }
+
+  function hasPetLifePayerContext(value) {
+    const source = String(value || "");
+    if (!containsPetLifeCompanyName(source)) {
+      return false;
+    }
+
+    const normalized = source.normalize ? source.normalize("NFKC") : source;
+    const petLife = "\u30da\u30c3\u30c8\u30e9\u30a4\u30d5";
+    const company = "(?:\u682a\u5f0f\u4f1a\u793e)?\\s*" + petLife + "\\s*(?:\u682a\u5f0f\u4f1a\u793e)?";
+    const payerLabels = "\u652f\u6255\u5143\u4f1a\u793e|\u652f\u6255\u3044\u5143\u4f1a\u793e|\u652f\u6255\u5143|\u652f\u6255\u3044\u5143|\u652f\u6255\u8005|\u8acb\u6c42\u5148\u4f1a\u793e|\u8acb\u6c42\u5148|\u5b9b\u5148|\u304a\u5ba2\u69d8\u540d|\u5fa1\u8acb\u6c42\u5148|\u3054\u8acb\u6c42\u5148";
+
+    return new RegExp("(?:" + payerLabels + ")[^\r\n]{0,60}" + company).test(normalized)
+      || new RegExp(company + "[^\r\n]{0,20}(?:\u5fa1\u4e2d|\u69d8|\u6bbf)").test(normalized)
+      || new RegExp("(?:" + payerLabels + ")[^\r\n]{0,60}PET\\s*LIFE", "i").test(normalized)
+      || /PET\s*LIFE[^\r\n]{0,20}(?:御中|様|殿)/i.test(normalized);
+  }
+
   function hasBankTransferDetails(extraction) {
     return [
       "bank_name",
@@ -2268,6 +2437,31 @@
     Object.keys(extraction).forEach(function (key) {
       if (keyMatches(key, "payment_description") || keyMatches(key, "summary")) {
         extraction[key] = normalizePaymentContent(extraction[key], extraction, item);
+      }
+    });
+  }
+
+  function limitPaymentDescriptionFields(extraction) {
+    Object.keys(extraction).forEach(function (key) {
+      if (keyMatches(key, "payment_description")) {
+        extraction[key] = truncatePaymentDescription(extraction[key]);
+      }
+    });
+  }
+
+  function truncatePaymentDescription(value) {
+    if (isBlank(value)) {
+      return null;
+    }
+
+    const text = String(value).replace(/\s+/g, " ").trim();
+    return Array.from(text).slice(0, PAYMENT_DESCRIPTION_MAX_LENGTH).join("");
+  }
+
+  function clearExtractedNotesFields(extraction) {
+    Object.keys(extraction).forEach(function (key) {
+      if (keyMatches(key, "notes")) {
+        extraction[key] = null;
       }
     });
   }
@@ -2685,6 +2879,13 @@
       rules.push(...paymentMethodRules());
     }
 
+    if (keyMatches(key, "payer_company_code")) {
+      rules.push(
+        "\u3053\u306e\u5217\u306f\u4f1a\u793e\u30b3\u30fc\u30c9\u3002\u652f\u6255\u3044\u5143\u4f1a\u793e\u540d\u30fb\u652f\u6255\u5143\u4f1a\u793e\u30fb\u8acb\u6c42\u5148\u30fb\u5b9b\u5148\u304c\u30da\u30c3\u30c8\u30e9\u30a4\u30d5\u306a\u3089\u3001\u66f8\u985e\u306b\u6570\u5b57\u30b3\u30fc\u30c9\u304c\u5370\u5b57\u3055\u308c\u3066\u3044\u306a\u304f\u3066\u3082635\u3092\u8fd4\u3059\u3002",
+        "\u30da\u30c3\u30c8\u30e9\u30a4\u30d5\u5fa1\u4e2d\u3001\u682a\u5f0f\u4f1a\u793e\u30da\u30c3\u30c8\u30e9\u30a4\u30d5\u5fa1\u4e2d\u3001PET LIFE\u5fa1\u4e2d\u306e\u3088\u3046\u306a\u5b9b\u5148\u8868\u8a18\u306f\u652f\u6255\u3044\u5143\u4f1a\u793e\u540d\u3068\u307f\u306a\u3057635\u3092\u8fd4\u3059\u3002"
+      );
+    }
+
     if (keyMatches(key, "bank_account_type")) {
       rules.push(...bankAccountTypeRules());
     }
@@ -2715,7 +2916,7 @@
     }
 
     if (keyMatches(key, "usage_month")) {
-      rules.push("利用月は日付ではなく月単位の項目。YYYY-M形式で返し、日付が書かれていても日部分は付けない。例: 2026年4月30日、2026-04-30、2026年4月分はいずれも2026-4。");
+      rules.push("利用月は日付ではなく月単位の項目。yyyy/mm形式で返し、日付が書かれていても日部分は付けない。月は2桁ゼロ埋め。例: 2026年4月30日、2026-04-30、2026年4月分はいずれも2026/04。");
     } else if (isDateField(key, label)) {
       rules.push("日付は可能ならYYYY-MM-DD形式。請求書発行日、支払日、伝票日付、契約期間を混同しない。");
     }
@@ -2799,6 +3000,8 @@
 
   function receiptMethodRules() {
     return [
+      "受領方法は基本的に「2=データで受領」を返す。アップロードされたPDF・画像・画像PDFは、紙原本として扱わず2を基本値にする。",
+      "書類上またはユーザー入力で紙原本・紙契約書などが明確な場合だけ1または3を返す。判断できない場合は2。",
       "受領方法は支払方法ではない。銀行振込、口座引落、クレジットなどを入れない。",
       "同じファイル種別なら必ず同じ番号にする。AIの見た目判断ではなく、事前判定を優先する。",
       "選択肢番号だけを返す。デジタルPDFなら2、画像または画像PDFなら1。",
@@ -2840,6 +3043,7 @@
 
   function paymentDescriptionRules() {
     return [
+      "支払内容はskyberry仕様上30文字以下。31文字以上になる場合は、意味が伝わる範囲で30文字以内に短くする。",
       "支払内容は品名、件名、但し書き、利用内容、請求内容、明細の主な内容を入れる。",
       "原則として書類上の文言をそのまま返す。抽象化、要約、言い換え、一般名への丸めは禁止。",
       "件名、摘要、但し書き、請求内容、ご利用内容として明記された文言を優先する。",
@@ -2888,6 +3092,18 @@
   }
 
   function fieldMeaning(key, label) {
+    if (keyMatches(key, "notes")) {
+      return "備考欄。空欄でOK。AIは書類内容から推測して埋めず、明確に備考欄として入力された値がない限りnull。";
+    }
+    if (isAccountingUseFieldKey(key)) {
+      return "経理使用欄。空欄でよい。AIは書類内容から推測せずnullにするが、ユーザーが画面で入力した値は保存・出力してよい。";
+    }
+    if (keyMatches(key, "usage_month")) {
+      return "利用月。日付ではなく月単位の値。必ずyyyy/mm形式で出力する。月は2桁ゼロ埋め。例: 2026/04。";
+    }
+    if (keyMatches(key, "payer_company_code")) {
+      return "\u4f1a\u793e\u30b3\u30fc\u30c9\uff08\u652f\u6255\u3044\u5143\u4f1a\u793e\u540d\uff09\u3002\u652f\u6255\u3044\u5143\u4f1a\u793e\u540d\u304c\u300c\u30da\u30c3\u30c8\u30e9\u30a4\u30d5\u300d\u306a\u3089635\u3092\u8fd4\u3059\u3002";
+    }
     if (key === "row_no") {
       return "Excel取込用の行管理No。書類上の請求書番号、領収書番号、伝票番号、No.とは別。AIでは抽出しない。";
     }
@@ -2913,7 +3129,7 @@
       return "支払内容・備考。品名、但し書き、利用内容、請求内容が該当する。会社名だけは入れない。";
     }
     if (keyMatches(key, "receipt_method")) {
-      return "請求書・領収書の受領方法。1=紙、2=データ/電子、3=その他(紙契約書)、4=その他(電子契約書)。支払方法とは別。";
+      return "請求書・領収書の受領方法。基本は2=データで受領。1=紙、2=データ/電子、3=その他(紙契約書)、4=その他(電子契約書)。支払方法とは別。";
     }
     if (keyMatches(key, "payment_method")) {
       return "支払方法。1=銀行振込、2=納付書、3=口座引落、4=海外送金、5=銀行振込(スポット)、6=クレジット自動引落、7=クレジット即日決済。";
@@ -2922,7 +3138,7 @@
       return "支払日・支払期日・振込期限。請求書発行日とは区別する。";
     }
     if (keyMatches(key, "usage_month")) {
-      return "利用月。日付ではなく月単位の値。日部分は付けずYYYY-M形式で出力する。";
+      return "利用月。日付ではなく月単位の値。日部分は付けずyyyy/mm形式で出力する。月は2桁ゼロ埋め。例: 2026/04。";
     }
     if (keyMatches(key, "invoice_issue_date") || keyMatches(key, "date")) {
       return "請求書・領収書の発行日、請求日、領収日、取引日。支払期日とは区別する。";
@@ -2955,6 +3171,11 @@
         aliases.add(value);
       });
     };
+
+    if (keyMatches(key, "notes")) {
+      add(["備考", "Notes"]);
+      return Array.from(aliases);
+    }
 
     if (keyMatches(key, "vendor")) {
       add(["支払先", "支払先名", "お支払先", "振込先", "振込先名", "振込先名義", "受取人", "受取人名", "受取人名義", "口座名義", "領収者", "店舗名", "店名", "加盟店", "取引先", "仕入先", "Payee", "Remit to", "Remittance", "Beneficiary", "Beneficiary Name", "Account Name", "Account Holder", "Vendor", "Supplier", "Seller", "From"]);
@@ -3036,6 +3257,10 @@
 
   function buildExtractionPrompt(item) {
     return [
+      hasField("notes") ? "備考欄は空欄でOKです。書類内容から推測して埋めず、明確に備考欄として記載された値がない場合はnullにしてください。" : "",
+      hasField("payment_description") ? "支払内容はskyberry仕様上30文字以下で返してください。31文字以上になる場合は、意味が伝わる範囲で30文字以内に短くしてください。" : "",
+      hasField("receipt_method") ? "受領方法は基本的に「2=データで受領」を返してください。PDF、画像、画像PDFとしてアップロードされた書類も紙原本扱いにせず、明確に紙原本・紙契約書と分かる場合だけ1または3にしてください。" : "",
+      hasField("usage_month") ? "利用月は必ずyyyy/mm形式で返してください。月は2桁ゼロ埋めで、日部分は付けません。例: 2026年4月30日、2026-04-30、2026年4月分はいずれも2026/04。" : "",
       "あなたは日本語・英語の請求書・領収書の項目抽出エンジンです。",
       "目的は、Excelの各列に入れる値を、書類画像またはPDF本文から抽出することです。",
       "最重要ルール: 書類に明記されていない項目は必ずnullにしてください。推測、補完、一般常識、ファイル名からの推定は禁止です。",
@@ -3055,11 +3280,11 @@
       ["bank_account_type", "bank_account_number", "bank_account_kana"].some(hasField) ? "口座情報のアンカー語: 普通、当座、貯蓄、口座種別、預金種目、口座番号、口座名義、口座名義フリガナ、口座名義カナ、受取人名カナ、振込先名義カナ、ﾌﾘｶﾞﾅ、ｶﾅ。これらの前後左右にある値を抽出対象に含めてください。" : "",
       hasField("vendor") ? "支払先名の判定手順: 1) 会社名候補を全て見る。2) 御中・様・殿が付く候補、請求者名、請求者、宛先、請求先、支払者側の候補を除外する。3) 残った候補から振込先・受取人名・口座名義・支払先を優先し、振込先がなければ御中などが付いていない請求元・発行者・発行元・領収者を選ぶ。4) 御中付き候補の敬称だけを削って返すことは禁止。迷う場合はnull。" : "",
       hasField("bank_account_kana") ? "口座名義フリガナは表記どおり保持してください。例: 'ｶ) ﾙ-ﾄｴ-' は 'ｶ)' を省略せず、そのまま返してください。'カ)ルートエー' を 'カ)ルートA' や 'カ)ルートI-' にしないでください。" : "",
-      hasField("usage_month") ? "利用月は日付ではなく月単位の項目です。出力はYYYY-M形式にし、2026-4-30や2026-04-30のように日部分を付けないでください。例: 2026年4月30日、2026年4月分、2026-04-30はいずれも2026-4。" : "",
+      hasField("usage_month") ? "利用月は日付ではなく月単位の項目です。出力はyyyy/mm形式にし、月は2桁ゼロ埋め、2026-4-30や2026-04-30のように日部分を付けないでください。例: 2026年4月30日、2026年4月分、2026-04-30はいずれも2026/04。" : "",
       hasField("payment_description") || hasField("summary") ? "支払内容・摘要は、書類に印字された支払内容、摘要、件名、但し書き、請求内容、ご利用内容、品名、内容を原文優先で抽出してください。これらの記入欄に値がある場合は必ず抽出してください。AIが内容を要約した分類名を作ることは禁止です。ご請求分・ご請求内訳・ご利用明細・請求明細の表に複数行がある場合、その中の1行だけを代表として返さないでください。ただし支払内容・摘要・件名などの明記欄に書かれた値は採用してください。" : "",
       "金額の重要ルール: 税抜、小計、消費税、税込合計、支払総額を混同しないでください。計算で補完せず、書類に明記された金額だけを返してください。",
       "金額候補が複数ある場合は、書類上のラベルとExcel列の意味が一致するものだけを採用してください。",
-      "日付項目は判別できる場合 YYYY-MM-DD に正規化してください。利用月は例外でYYYY-Mにし、日部分を付けないでください。",
+      "日付項目は判別できる場合 YYYY-MM-DD に正規化してください。利用月は例外でyyyy/mmにし、月は2桁ゼロ埋め、日部分を付けないでください。",
       "金額は数値だけにし、円記号やカンマは含めないでください。",
       `抽出項目: ${activeExtractionFields.map(function (field) {
         return `${fieldKey(field)}=${fieldLabel(field)}`;
@@ -3280,7 +3505,7 @@
     const rows = activeExtractionFields.map(function (field) {
       const key = fieldKey(field);
       const label = fieldLabel(field);
-      return `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(formatFieldValue(extraction[key]))}</dd></div>`;
+      return `<div><dt>${escapeHtml(displayFieldLabel(key, label))}</dt><dd>${escapeHtml(formatFieldValueForField(key, label, extraction[key]))}</dd></div>`;
     }).join("");
 
     return `<dl class="field-list">${rows}</dl>`;
@@ -3295,7 +3520,7 @@
     const scoreClass = score >= 80 ? "score" : "score warn";
     const details = comparison.details.map(function (detail) {
       const mark = detail.ok ? "OK" : "NG";
-      return `<span>${mark} ${escapeHtml(detail.label)}: ${escapeHtml(formatFieldValue(detail.actual))} / ${escapeHtml(formatFieldValue(detail.expected))}</span>`;
+      return `<span>${mark} ${escapeHtml(displayFieldLabel(detail.field, detail.label))}: ${escapeHtml(formatFieldValueForField(detail.field, detail.label, detail.actual))} / ${escapeHtml(formatFieldValueForField(detail.field, detail.label, detail.expected))}</span>`;
     }).join("");
 
     return `<span class="${scoreClass}">${score}% (${comparison.matched}/${comparison.compared})</span><div class="match-list">${details}</div>`;
@@ -3314,6 +3539,12 @@
     }
 
     state.currentReviewId = itemId;
+    if (state.extractions.has(itemId)) {
+      const extraction = state.extractions.get(itemId);
+      applyPayerCompanyCodeHints(extraction, item);
+      applyUploadedFileNameFields(extraction, item);
+      state.extractions.set(itemId, extraction);
+    }
     markSelectedRows(itemId);
     renderReviewList();
     renderReviewPanel(item, state.extractions.get(itemId) || {});
@@ -3376,21 +3607,25 @@
     }
     setReviewEditStatus(state.extractions.has(item.id) ? "編集できます" : "AI抽出前");
 
-    els.reviewForm.innerHTML = activeExtractionFields.map(function (field) {
+    els.reviewForm.innerHTML = reviewExtractionFields().map(function (field) {
       const key = fieldKey(field);
       const label = fieldLabel(field);
-      const value = extraction[key] === null || extraction[key] === undefined ? "" : String(extraction[key]);
+      const extractedValue = reviewFieldValue(extraction, field);
+      const value = extractedValue === null || extractedValue === undefined ? "" : String(extractedValue);
       const isLong = /内容|摘要|備考|明細|detail|description|notes|summary/.test(key + label);
       const isPaymentDate = keyMatches(key, "payment_due_date");
-      const inputType = isAmountField(key, label) ? "number" : isPaymentDate ? "date" : "text";
-      const inputValue = isPaymentDate ? dateInputValue(value) : value;
+      const isAmount = isAmountField(key, label);
+      const inputType = isPaymentDate ? "date" : "text";
+      const inputValue = isPaymentDate ? dateInputValue(value) : isAmount ? formatAmountValue(value) : value;
       const datePickerAttr = isPaymentDate ? ' data-date-picker="true"' : "";
+      const inputModeAttr = isAmount ? ' inputmode="decimal"' : "";
+      const maxLengthAttr = keyMatches(key, "payment_description") ? ` maxlength="${PAYMENT_DESCRIPTION_MAX_LENGTH}"` : "";
       const input = isLong
-        ? `<textarea id="review-${escapeHtml(key)}" data-field-key="${escapeHtml(key)}">${escapeHtml(value)}</textarea>`
-        : `<input id="review-${escapeHtml(key)}" data-field-key="${escapeHtml(key)}" type="${inputType}" value="${escapeHtml(inputValue)}"${datePickerAttr} />`;
+        ? `<textarea id="review-${escapeHtml(key)}" data-field-key="${escapeHtml(key)}"${maxLengthAttr}>${escapeHtml(value)}</textarea>`
+        : `<input id="review-${escapeHtml(key)}" data-field-key="${escapeHtml(key)}" type="${inputType}" value="${escapeHtml(inputValue)}"${datePickerAttr}${inputModeAttr}${maxLengthAttr} />`;
       return `
         <div class="review-field">
-          <label for="review-${escapeHtml(key)}">${escapeHtml(label)}</label>
+          <label for="review-${escapeHtml(key)}">${escapeHtml(displayFieldLabel(key, label))}</label>
           ${input}
           ${isPaymentDate ? '<span class="review-field-help payment-reminder">入金を忘れないよう、支払日を必ず確認してください。</span>' : ""}
           <span class="review-field-required-message">必須項目です</span>
@@ -3399,6 +3634,93 @@
       `;
     }).join("");
     highlightCurrentReviewRequiredFields();
+  }
+
+  function reviewExtractionFields() {
+    const shownBaseKeys = new Set();
+    return activeExtractionFields
+      .map(function (field, index) {
+        return { field, index };
+      })
+      .sort(function (left, right) {
+        const leftRank = reviewFieldOrderRank(left.field);
+        const rightRank = reviewFieldOrderRank(right.field);
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+        return left.index - right.index;
+      })
+      .filter(function (entry) {
+        const baseKey = reviewDedupedBaseKey(fieldKey(entry.field));
+        if (!baseKey) {
+          return true;
+        }
+        if (shownBaseKeys.has(baseKey)) {
+          return false;
+        }
+        shownBaseKeys.add(baseKey);
+        return true;
+      })
+      .map(function (entry) {
+        return entry.field;
+      });
+  }
+
+  function reviewDedupedBaseKey(key) {
+    const matched = Array.from(REVIEW_DEDUPED_FIELD_KEYS).find(function (baseKey) {
+      return keyMatches(key, baseKey);
+    });
+    return matched || "";
+  }
+
+  function reviewFieldValue(extraction, field) {
+    const key = fieldKey(field);
+    const baseKey = reviewDedupedBaseKey(key);
+    if (!baseKey) {
+      return extraction[key];
+    }
+
+    const duplicateKeys = activeExtractionFields
+      .map(fieldKey)
+      .filter(function (candidateKey) {
+        return keyMatches(candidateKey, baseKey);
+      });
+    const filledKey = duplicateKeys.find(function (candidateKey) {
+      return !isBlank(extraction[candidateKey]);
+    });
+    return filledKey ? extraction[filledKey] : extraction[key];
+  }
+
+  function syncReviewDedupedFields(extraction) {
+    REVIEW_DEDUPED_FIELD_KEYS.forEach(function (baseKey) {
+      const duplicateKeys = activeExtractionFields
+        .map(fieldKey)
+        .filter(function (key) {
+          return keyMatches(key, baseKey);
+        });
+      const filledKey = duplicateKeys.find(function (key) {
+        return !isBlank(extraction[key]);
+      });
+      if (!filledKey) {
+        return;
+      }
+      duplicateKeys.forEach(function (key) {
+        extraction[key] = extraction[filledKey];
+      });
+    });
+  }
+
+  function reviewFieldOrderRank(field) {
+    const key = fieldKey(field);
+    const matchedIndex = REVIEW_FIELD_ORDER.findIndex(function (baseKey) {
+      return keyMatches(key, baseKey);
+    });
+
+    if (matchedIndex >= 0) {
+      return matchedIndex;
+    }
+
+    return REVIEW_FIELD_ORDER.length + Math.max(fieldColumnIndex(field), 0);
   }
 
   function pagePreviewUrlsForItem(item) {
@@ -3455,7 +3777,7 @@
     activeExtractionFields.forEach(function (field) {
       const key = fieldKey(field);
       const label = fieldLabel(field);
-      const input = els.reviewForm.querySelector(`[data-field-key="${cssEscape(key)}"]`);
+      const input = reviewInputForField(field);
       const rawValue = input ? input.value.trim() : "";
       if (!rawValue) {
         updated[key] = null;
@@ -3479,6 +3801,9 @@
       if (keyMatches(key, "payment_method")) {
         updated[key] = normalizePaymentMethod(updated[key], updated, item);
       }
+      if (keyMatches(key, "payer_company_code")) {
+        updated[key] = normalizePayerCompanyCode(updated[key]);
+      }
       if (keyMatches(key, "usage_month")) {
         updated[key] = normalizeUsageMonth(updated[key]);
       }
@@ -3494,7 +3819,11 @@
     });
     cleanPaymentContentFields(updated, item);
     fillExplicitPaymentContentFields(updated, item);
+    limitPaymentDescriptionFields(updated);
     fillSummaryFields(updated);
+    applyPayerCompanyCodeHints(updated, item);
+    applyUploadedFileNameFields(updated, item);
+    syncReviewDedupedFields(updated);
 
     state.extractions.set(state.currentReviewId, updated);
     const requiredValidation = highlightCurrentReviewRequiredFields();
@@ -3615,7 +3944,7 @@
           }
 
           const cellAddress = XLSX.utils.encode_cell({ r: excelRowNumber - 1, c: columnIndex });
-          sheet[cellAddress] = cellForValue(value);
+          sheet[cellAddress] = cellForValue(value, key, label);
         });
       });
 
@@ -3653,9 +3982,13 @@
         return state.extractions.has(item.id);
       })
       .map(function (item) {
+        const extraction = { ...state.extractions.get(item.id) };
+        applyPayerCompanyCodeHints(extraction, item);
+        applyUploadedFileNameFields(extraction, item);
+        syncReviewDedupedFields(extraction);
         return {
           item,
-          extraction: state.extractions.get(item.id),
+          extraction,
         };
       });
   }
@@ -3992,6 +4325,15 @@
     return found;
   }
 
+  function requiredGroupDisplayLabel(group) {
+    if (group && Array.isArray(group.fields) && group.fields.some(function (field) {
+      return keyMatches(fieldKey(field), "payment_description");
+    })) {
+      return "\u652f\u6255\u5185\u5bb9\u203b30\u6587\u5b57\u4ee5\u5185";
+    }
+    return group.label;
+  }
+
   function showSkyberryRequiredError(validation) {
     const firstInvalid = validation.invalidRows[0];
     if (!firstInvalid) {
@@ -4005,7 +4347,7 @@
     sendClientLog("skyberry.excel.required_missing", {
       fileName: displayName(firstInvalid.item.file),
       missing: firstInvalid.validation.missingGroups.map(function (group) {
-        return group.label;
+        return requiredGroupDisplayLabel(group);
       }),
       invalidRows: validation.invalidRows.length,
     });
@@ -4018,7 +4360,7 @@
     }
 
     const missingLabels = firstInvalid.validation.missingGroups.map(function (group) {
-      return group.label;
+      return requiredGroupDisplayLabel(group);
     });
 
     return new Promise(function (resolve) {
@@ -4099,7 +4441,7 @@
   function requiredValidationMessage(validation) {
     const firstInvalid = validation.invalidRows[0];
     const labels = firstInvalid.validation.missingGroups.map(function (group) {
-      return group.label;
+      return requiredGroupDisplayLabel(group);
     });
     const visibleLabels = labels.slice(0, 6).join("、");
     const extraLabelCount = Math.max(labels.length - 6, 0);
@@ -4122,10 +4464,32 @@
     const values = {};
     activeExtractionFields.forEach(function (field) {
       const key = fieldKey(field);
-      const input = els.reviewForm.querySelector(`[data-field-key="${cssEscape(key)}"]`);
+      const input = reviewInputForField(field);
       values[key] = input ? input.value.trim() : null;
     });
     return values;
+  }
+
+  function reviewInputForField(field) {
+    const key = fieldKey(field);
+    const exactInput = els.reviewForm.querySelector(`[data-field-key="${cssEscape(key)}"]`);
+    if (exactInput) {
+      return exactInput;
+    }
+
+    const baseKey = reviewDedupedBaseKey(key);
+    if (!baseKey) {
+      return null;
+    }
+
+    const visibleField = reviewExtractionFields().find(function (candidate) {
+      return keyMatches(fieldKey(candidate), baseKey);
+    });
+    if (!visibleField) {
+      return null;
+    }
+
+    return els.reviewForm.querySelector(`[data-field-key="${cssEscape(fieldKey(visibleField))}"]`);
   }
 
   function applyRequiredHighlights(validation) {
@@ -4215,21 +4579,46 @@
   }
 
   function valueForSkyberryCell(extraction, key, rowIndex) {
+    if (keyMatches(key, "payment_description")) {
+      return truncatePaymentDescription(extraction[key]);
+    }
+
+    if (keyMatches(key, "invoice_original_1")) {
+      return extraction[key];
+    }
+
+    if (keyMatches(key, "payer_company_code")) {
+      return normalizePayerCompanyCode(extraction[key]);
+    }
+
     return extraction[key];
   }
 
-  function cellForValue(value) {
+  function cellForValue(value, key, label) {
+    const useCommaFormat = isAmountField(key || "", label || "");
     if (typeof value === "number") {
-      return { t: "n", v: value };
+      const cell = { t: "n", v: value };
+      if (useCommaFormat) {
+        cell.z = numberFormatForExcel(value);
+      }
+      return cell;
     }
 
     const text = String(value);
     const numeric = Number(text.replace(/[^\d.-]/g, ""));
     if (text && /^-?[\d,]+(\.\d+)?$/.test(text) && Number.isFinite(numeric)) {
-      return { t: "n", v: numeric };
+      const cell = { t: "n", v: numeric };
+      if (useCommaFormat) {
+        cell.z = numberFormatForExcel(numeric);
+      }
+      return cell;
     }
 
     return { t: "s", v: text };
+  }
+
+  function numberFormatForExcel(value) {
+    return Number.isInteger(Number(value)) ? "#,##0" : "#,##0.00";
   }
 
   function formatDateForFileName(date) {
@@ -4312,6 +4701,13 @@
     return Array.isArray(field) ? field[1] : field.label;
   }
 
+  function displayFieldLabel(key, label) {
+    if (keyMatches(key, "payment_description") && !String(label).includes("30文字以内")) {
+      return `${label}※30文字以内`;
+    }
+    return label;
+  }
+
   function fieldColumnIndex(field) {
     if (!field || Array.isArray(field) || typeof field.columnIndex !== "number") {
       return -1;
@@ -4325,11 +4721,42 @@
     });
   }
 
+  function isAccountingUseFieldKey(key) {
+    return Array.from(ACCOUNTING_USE_FIELD_KEYS).some(function (baseKey) {
+      return key === baseKey || new RegExp(`^${escapeRegExp(baseKey)}_\\d+$`).test(key);
+    });
+  }
+
   function formatFieldValue(value) {
     if (isBlank(value)) {
       return "-";
     }
     return String(value);
+  }
+
+  function formatFieldValueForField(key, label, value) {
+    if (isBlank(value)) {
+      return "-";
+    }
+    return isAmountField(key, label) ? formatAmountValue(value) : String(value);
+  }
+
+  function formatAmountValue(value) {
+    if (isBlank(value)) {
+      return "";
+    }
+
+    const source = String(value).trim();
+    const numericText = source.replace(/[^\d.-]/g, "");
+    if (!/^-?\d+(\.\d+)?$/.test(numericText)) {
+      return source;
+    }
+
+    const sign = numericText.startsWith("-") ? "-" : "";
+    const unsigned = sign ? numericText.slice(1) : numericText;
+    const parts = unsigned.split(".");
+    const integerPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return `${sign}${integerPart}${parts[1] !== undefined ? `.${parts[1]}` : ""}`;
   }
 
   function isBlank(value) {

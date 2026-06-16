@@ -36,14 +36,25 @@
             type="file"
             multiple
             webkitdirectory
+            directory
+            mozdirectory
             accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,image/jpeg,image/png,image/heic,image/heif,application/pdf"
           />
-          <div class="drop-zone" id="dropZone" role="button" tabindex="0">
+          <div class="drop-zone" id="dropZone">
             <div class="drop-zone-body">
-              <span class="drop-icon" aria-hidden="true">+</span>
+              <button
+                type="button"
+                class="drop-icon"
+                id="uploadChoiceButton"
+                aria-label="ファイルを選択"
+              >+</button>
               <strong>請求書・領収書を選択</strong>
               <span>複数ファイル / フォルダ / ドラッグ&ドロップ</span>
               <span>PDF / JPG / PNG / HEIC</span>
+              <div class="drop-zone-actions">
+                <button type="button" id="fileSelectButton">ファイルを選択</button>
+                <button type="button" class="primary-button" id="folderSelectButton">フォルダを選択</button>
+              </div>
             </div>
           </div>
 
@@ -227,6 +238,6 @@
     <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <script src="./config.js"></script>
-    <script src="./app.js" charset="utf-8"></script>
+    <script src="./app.js?v=20260616-review-dedupe-payment-date" charset="utf-8"></script>
   </body>
 </html>
