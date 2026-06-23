@@ -38,6 +38,7 @@
     "payment_method",
     "payer_company_code",
     "vendor",
+    "counterparty_code",
     "vendor_code",
     "subtotal_amount_jpy",
     "subtotal_amount_usd",
@@ -3627,7 +3628,7 @@
         <div class="review-field">
           <label for="review-${escapeHtml(key)}">${escapeHtml(displayFieldLabel(key, label))}</label>
           ${input}
-          ${isPaymentDate ? '<span class="review-field-help payment-reminder">入金を忘れないよう、支払日を必ず確認してください。</span>' : ""}
+          ${isPaymentDate ? '<span class="review-field-help payment-reminder">入金を忘れないよう、支払日を必ず確認してください。土日祝の場合前営業日指定。</span>' : ""}
           <span class="review-field-required-message">必須項目です</span>
           <span class="review-field-meta">${escapeHtml(key)}</span>
         </div>
@@ -3651,7 +3652,13 @@
         return left.index - right.index;
       })
       .filter(function (entry) {
-        const baseKey = reviewDedupedBaseKey(fieldKey(entry.field));
+        const key = fieldKey(entry.field);
+        // 会計用フィールド（伝票種類～イニシャルストック）を編集画面で非表示
+        // 但し counterparty_code（経理CD）は表示
+        if (ACCOUNTING_USE_FIELD_KEYS.has(key) && !keyMatches(key, "counterparty_code")) {
+          return false;
+        }
+        const baseKey = reviewDedupedBaseKey(key);
         if (!baseKey) {
           return true;
         }
@@ -4248,6 +4255,10 @@
       {
         label: "支払先名",
         fields: requiredFields(["vendor"], /^支払先名$/),
+      },
+      {
+        label: "経理CD",
+        fields: requiredFields(["accounting_code"], /^経理CD$/),
       },
       {
         label: "￥通貨：支払金額(税抜)または＄通貨：支払金額(税抜)",
