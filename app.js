@@ -66,6 +66,9 @@
   const REVIEW_DEDUPED_FIELD_KEYS = new Set([
     "payment_due_date",
   ]);
+  const TEXT_ONLY_FIELD_KEYS = new Set([
+    "bank_account_number",
+  ]);
   const EXTRACTION_FIELDS = [
     ["date", "日付"],
     ["vendor", "取引先"],
@@ -1835,12 +1838,21 @@
     ].join("|");
     const candidates = extractLabeledCandidates(text, labelPattern, { allowNextLine: true });
     for (const candidate of candidates) {
-      const normalized = normalizeFlexibleDateCandidate(candidate);
+      const normalized = normalizePaymentDueDate(candidate);
       if (!isBlank(normalized)) {
         return normalized;
       }
     }
     return null;
+  }
+
+  function normalizePaymentDueDate(value) {
+    const normalized = normalizeFlexibleDateCandidate(value) || normalizeDate(value);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+      return null;
+    }
+
+    return previousBusinessDayIfNeeded(normalized);
   }
 
   function normalizeFlexibleDateCandidate(value) {
@@ -1869,6 +1881,156 @@
       return null;
     }
     return `${y}-${m}-${d}`;
+  }
+
+  function previousBusinessDayIfNeeded(value) {
+    const current = parseIsoDate(value);
+    if (!current) {
+      return value;
+    }
+
+    while (isNonBusinessDay(current)) {
+      current.setDate(current.getDate() - 1);
+    }
+
+    return formatIsoDate(current);
+  }
+
+  function parseIsoDate(value) {
+    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) {
+      return null;
+    }
+
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const date = new Date(year, month, day);
+    if (
+      date.getFullYear() !== year ||
+      date.getMonth() !== month ||
+      date.getDate() !== day
+    ) {
+      return null;
+    }
+
+    return date;
+  }
+
+  function formatIsoDate(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function isNonBusinessDay(date) {
+    return isWeekend(date) || isJapaneseHoliday(date);
+  }
+
+  function isWeekend(date) {
+    const day = date.getDay();
+    return day === 0 || day === 6;
+  }
+
+  const japaneseHolidayCache = new Map();
+
+  function isJapaneseHoliday(date) {
+    const year = date.getFullYear();
+    const key = `${year}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const holidays = getJapaneseHolidaySet(year);
+    return holidays.has(key);
+  }
+
+  function getJapaneseHolidaySet(year) {
+    if (japaneseHolidayCache.has(year)) {
+      return japaneseHolidayCache.get(year);
+    }
+
+    const holidays = new Set();
+    const addHoliday = function (month, day) {
+      holidays.add(`${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`);
+    };
+
+    const addNthWeekday = function (month, weekday, nth) {
+      const firstDay = new Date(year, month - 1, 1);
+      const offset = (7 + weekday - firstDay.getDay()) % 7;
+      addHoliday(month, 1 + offset + (nth - 1) * 7);
+    };
+
+    const vernalEquinoxDay = function (targetYear) {
+      if (targetYear <= 1979) {
+        return Math.floor(20.8357 + 0.242194 * (targetYear - 1980) - Math.floor((targetYear - 1983) / 4));
+      }
+      if (targetYear <= 2099) {
+        return Math.floor(20.8431 + 0.242194 * (targetYear - 1980) - Math.floor((targetYear - 1980) / 4));
+      }
+      return Math.floor(21.851 + 0.242194 * (targetYear - 1980) - Math.floor((targetYear - 1980) / 4));
+    };
+
+    const autumnEquinoxDay = function (targetYear) {
+      if (targetYear <= 1979) {
+        return Math.floor(23.2588 + 0.242194 * (targetYear - 1980) - Math.floor((targetYear - 1983) / 4));
+      }
+      if (targetYear <= 2099) {
+        return Math.floor(23.2488 + 0.242194 * (targetYear - 1980) - Math.floor((targetYear - 1980) / 4));
+      }
+      return Math.floor(24.2488 + 0.242194 * (targetYear - 1980) - Math.floor((targetYear - 1980) / 4));
+    };
+
+    addHoliday(1, 1);
+    addNthWeekday(1, 1, 2);
+    addHoliday(2, 11);
+    if (year >= 2020) {
+      addHoliday(2, 23);
+    }
+    addHoliday(3, vernalEquinoxDay(year));
+    addHoliday(4, 29);
+    addHoliday(5, 3);
+    addHoliday(5, 4);
+    addHoliday(5, 5);
+    addNthWeekday(7, 1, 3);
+    addNthWeekday(8, 1, 2);
+    addNthWeekday(9, 1, 3);
+    addHoliday(9, autumnEquinoxDay(year));
+    addNthWeekday(10, 1, 2);
+    addHoliday(11, 3);
+    addHoliday(11, 23);
+
+    const baseHolidaySet = new Set(holidays);
+
+    for (const key of Array.from(baseHolidaySet)) {
+      const [holidayYear, holidayMonth, holidayDay] = key.split("-").map(Number);
+      const holidayDate = new Date(holidayYear, holidayMonth - 1, holidayDay);
+      if (holidayDate.getDay() !== 0) {
+        continue;
+      }
+
+      const substituteDate = new Date(holidayDate);
+      do {
+        substituteDate.setDate(substituteDate.getDate() + 1);
+      } while (holidays.has(formatIsoDate(substituteDate)));
+
+      holidays.add(formatIsoDate(substituteDate));
+    }
+
+    let cursor = new Date(year, 0, 1);
+    while (cursor.getFullYear() === year) {
+      const key = formatIsoDate(cursor);
+      if (!holidays.has(key)) {
+        const prev = new Date(cursor);
+        prev.setDate(prev.getDate() - 1);
+        const next = new Date(cursor);
+        next.setDate(next.getDate() + 1);
+        if (holidays.has(formatIsoDate(prev)) && holidays.has(formatIsoDate(next))) {
+          holidays.add(key);
+        }
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    japaneseHolidayCache.set(year, holidays);
+    return holidays;
   }
 
   function normalizeUsageMonth(value) {
@@ -3437,7 +3599,7 @@
       return "";
     }
 
-    const normalized = normalizeFlexibleDateCandidate(value) || normalizeDate(value);
+    const normalized = normalizePaymentDueDate(value);
     return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : "";
   }
 
@@ -3795,6 +3957,8 @@
         updated[key] = normalizeReceiptMethod(rawValue, item);
       } else if (keyMatches(key, "payment_method")) {
         updated[key] = rawValue;
+      } else if (keyMatches(key, "payment_due_date")) {
+        updated[key] = normalizePaymentDueDate(rawValue);
       } else {
         updated[key] = rawValue;
       }
@@ -4594,6 +4758,10 @@
       return truncatePaymentDescription(extraction[key]);
     }
 
+    if (keyMatches(key, "payment_due_date")) {
+      return normalizePaymentDueDate(extraction[key]);
+    }
+
     if (keyMatches(key, "invoice_original_1")) {
       return extraction[key];
     }
@@ -4607,6 +4775,10 @@
 
   function cellForValue(value, key, label) {
     const useCommaFormat = isAmountField(key || "", label || "");
+    if (shouldKeepFieldAsText(key)) {
+      return { t: "s", v: String(value) };
+    }
+
     if (typeof value === "number") {
       const cell = { t: "n", v: value };
       if (useCommaFormat) {
@@ -4626,6 +4798,13 @@
     }
 
     return { t: "s", v: text };
+  }
+
+  function shouldKeepFieldAsText(key) {
+    const normalizedKey = key || "";
+    return Array.from(TEXT_ONLY_FIELD_KEYS).some(function (baseKey) {
+      return keyMatches(normalizedKey, baseKey);
+    });
   }
 
   function numberFormatForExcel(value) {

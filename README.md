@@ -20,9 +20,9 @@
 手動で起動する場合は、このフォルダで以下を実行してください。
 
 ```powershell
+cd "invoice-input(アプリケーション本体）"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1
 ```
-
 PDF解析とHEIC変換はCDNライブラリを使うため、初回表示時にインターネット接続が必要です。
 
 ## AI精度検証
