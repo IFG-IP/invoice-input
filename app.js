@@ -4117,6 +4117,7 @@
           const cellAddress = XLSX.utils.encode_cell({ r: excelRowNumber - 1, c: columnIndex });
           sheet[cellAddress] = cellForValue(value, key, label);
         });
+        clearSkyberryExportColumns(sheet, excelRowNumber);
       });
 
       const maxColumn = Math.max(headerRow.length - 1, originalRange.e.c, 0);
@@ -4771,6 +4772,14 @@
     }
 
     return extraction[key];
+  }
+
+  function clearSkyberryExportColumns(sheet, excelRowNumber) {
+    // Keep AG/AH blank in the exported workbook.
+    [32, 33].forEach(function (columnIndex) {
+      const cellAddress = XLSX.utils.encode_cell({ r: excelRowNumber - 1, c: columnIndex });
+      delete sheet[cellAddress];
+    });
   }
 
   function cellForValue(value, key, label) {
