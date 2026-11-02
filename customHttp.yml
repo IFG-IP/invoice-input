@@ -1,8 +1,9 @@
+# script-src の 'unsafe-eval' は heic2any（HEIC 変換）の worker が eval を使うため必要。font-src の cdn.jsdelivr.net は pdf.js の標準フォント（standard_fonts）用
 customHeaders:
   - pattern: '**'
     headers:
       - key: Content-Security-Policy
-        value: "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://cdn.sheetjs.com; worker-src 'self' blob: https://cdnjs.cloudflare.com; style-src 'self'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' data: blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://zh3jc1mqgf.execute-api.ap-northeast-1.amazonaws.com; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
+        value: "default-src 'self'; script-src 'self' 'unsafe-eval' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://cdn.sheetjs.com; worker-src 'self' blob: https://cdnjs.cloudflare.com; style-src 'self'; font-src 'self' data: https://cdn.jsdelivr.net; img-src 'self' data: blob:; connect-src 'self' data: blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://zh3jc1mqgf.execute-api.ap-northeast-1.amazonaws.com; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
       - key: X-Frame-Options
         value: DENY
       - key: X-Content-Type-Options
